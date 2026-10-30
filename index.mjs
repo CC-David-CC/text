@@ -1,19 +1,816 @@
-/** Editor for the account's local-first mirrored files. */
-export function mount(host){
- const {w}=host,{make,textButton,appInput}=host.ui,{mirrorFileContext,signedInSubject}=host.storage;
- const launch=w.launchContext,owner=launch?.owner||signedInSubject(),fileContext=mirrorFileContext;
- const state=w.editor??={storage:'mirror',path:launch?.path||'/Untitled.txt',text:'',version:null,loaded:!launch,dirty:false};
- if(owner)w.ownerSub=owner;
- const body=make('div','window-content editor-content'),bar=make('form','app-toolbar'),path=appInput('File path',state.path),area=make('textarea','guest-editor'),status=make('div','app-status');
- area.setAttribute('aria-label','Text document');area.spellcheck=false;area.value=state.text;let busy=false,revision=0,unsubscribe=()=>{};
- const valid=()=>!host.signal.aborted&&body.isConnected&&signedInSubject()===owner;
- const update=()=>{status.textContent=(state.dirty?'Unsaved changes. ':'')+(state.changed?'The saved file changed. Reload to see it.':'Ready');};update();
- async function load({checkServer=false}={}){if(busy||!valid())return;busy=true;area.disabled=true;const n=++revision;try{const c=await fileContext();let offline=false;if(checkServer)try{await c.files.sync();}catch{offline=true;}const r=await c.files.read(state.path);if(!valid()||n!==revision)return;if(r.data.length>2*1024*1024||r.data.slice(0,1024).includes(0))throw Error('This file cannot be opened as text.');state.text=new TextDecoder('utf-8',{fatal:true}).decode(r.data);state.version=r.version;state.loaded=true;state.dirty=false;state.changed=false;area.value=state.text;update();if(r.status==='conflict')status.textContent='This file has conflicting copies. Resolve them in Files.';else if(offline)status.textContent='Loaded the browser copy; the server could not be reached.';}catch(e){if(valid())status.textContent=e.message;}finally{busy=false;if(valid()&&state.loaded)area.disabled=false;}}
- async function observe(c){if(!valid()||busy||!state.loaded||!state.version)return;const observedPath=state.path,observedVersion=state.version;try{const item=await c.files.read(observedPath);if(!valid()||busy||state.path!==observedPath||state.version!==observedVersion)return;if(item.status==='conflict'){state.changed=true;status.textContent='This file has conflicting copies. Resolve them in Files.';}else if(item.version!==observedVersion){state.changed=true;update();}}catch{if(valid()&&!busy&&state.path===observedPath){state.changed=true;status.textContent='The saved file is no longer available. Your open text is unchanged.';}}}
- queueMicrotask(async()=>{try{const c=await fileContext();if(!valid()||!c.valid())return;unsubscribe=c.files.subscribe(()=>observe(c));await observe(c);}catch(e){if(valid())status.textContent=e.message;}});
- async function save(){if(busy||!valid())return;if(!state.loaded){status.textContent='Load the file before saving.';return;}busy=true;const target=path.value,text=area.value;try{const c=await fileContext(),p=c.path(target),r=await c.files.write(p,text,p===state.path?state.version:null);if(!valid())return;state.path=p;state.version=r.version;state.changed=false;state.dirty=state.text!==text;w.title=p.split('/').pop()+' — Text Editor';status.textContent=state.dirty?'Saved earlier text; newer edits are unsaved.':'Saved on this device; syncing with server…';}catch(e){if(valid())status.textContent=e.message;}finally{busy=false;}}
- bar.append(path,textButton('Browse My files',async()=>{if(state.dirty&&!confirm('Discard unsaved edits and open another file?'))return;const selected=await host.storage.pickFile({extensions:['.txt','.md','.py','.sh','.csv','.json','.xml','.yaml','.yml','.ini','.conf'],signal:host.signal});if(!selected)return;state.path=selected;state.loaded=false;state.version=null;path.value=selected;await load();}),textButton('Save',save),textButton('Reload',()=>{if(!state.dirty||confirm('Discard unsaved edits and reload?'))load({checkServer:true});}));bar.addEventListener('submit',e=>{e.preventDefault();save();});
- area.addEventListener('input',()=>{state.text=area.value;state.dirty=true;update();});area.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();save();}if(e.key==='Tab'){e.preventDefault();area.setRangeText('    ',area.selectionStart,area.selectionEnd,'end');area.dispatchEvent(new Event('input',{bubbles:true}));}});
- body.append(bar,area,status);if(!state.loaded){area.disabled=true;queueMicrotask(load);}else if(!owner){area.disabled=true;status.textContent='Sign in to use your files.';}
- return {element:body,dispose(){revision++;unsubscribe();}};
+/** CodiServer Text v0.2.0 — compact UI, unchanged mount(host) file contract.
+ * Desktop: File / Edit / View | Reload / Find | document name / Save.
+ * Phone: the approved document header + Open / Save / Find bottom bar.
+ * These are presentations of ONE command table and ONE editing surface.
+ *
+ * CM6-MIGRATION 1/8 — SHARED SYSTEM DEPENDENCY (not implemented here).
+ * When CodiServer supplies its shared CodeMirror 6 module, consume that module
+ * rather than embedding a private bundle or downloading one from a CDN.
+ * Share immutable code/extensions, NOT a mutable EditorView/document singleton.
+ * Each mount owns its own EditorState, EditorView, history and disposal.
+ * Keep mount(host) synchronous. Any later async module acquisition must check
+ * this instance's disposal/identity before creating a view. Do not introduce a
+ * second editable surface while loading. No new host service API is assumed.
+ * See docs/EXPERIENCE.md for the migration boundary and acceptance criteria.
+ */
+let nextInstanceId = 0;
+
+export function mount(host) {
+  const instanceId = `ce-editor-${++nextInstanceId}`;
+  const { w } = host;
+  const { make } = host.ui;
+  const { mirrorFileContext, signedInSubject } = host.storage;
+  const launch = w.launchContext;
+  const owner = launch?.owner || signedInSubject();
+  const state = w.editor ??= {
+    storage: 'mirror', path: launch?.path || '/Untitled.txt', text: '',
+    version: null, loaded: !launch, dirty: false, changed: false, wrap: true
+  };
+  state.wrap ??= true; // New documents wrap; an explicit user toggle is respected.
+  state.textSize ??= 0; // Relative steps: the phone keeps its larger base size.
+  if (owner) w.ownerSub = owner;
+
+  const body = make('div', 'window-content codi-text-editor');
+  const style = document.createElement('style');
+  style.textContent = STYLES;
+  body.append(style);
+
+  const el = (tag, cls, content) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (content != null) node.textContent = content;
+    return node;
+  };
+  const btn = (cls, label, title) => {
+    const node = el('button', cls);
+    node.type = 'button';
+    node.setAttribute('aria-label', label);
+    if (title) node.title = title;
+    return node;
+  };
+  const icon = name => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '18');
+    svg.setAttribute('height', '18');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    for (const path of ICONS[name] || []) {
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('d', path);
+      svg.append(p);
+    }
+    return svg;
+  };
+  const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
+  let disposed = false;
+  const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
+  let busy = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let notice = '', noticeKind = '', activeMenu = null, menuTrigger = null;
+
+  // Main window contents. The title bar itself continues to be owned by CodiServer.
+  const header = el('div', 'ce-header');
+  const menuSet = el('div', 'ce-menu-set');
+  const docName = el('div', 'ce-docname');
+  docName.append(icon('document'));
+  const nameText = el('span', 'ce-name');
+  const dirtyDot = el('span', 'ce-dirty-dot');
+  dirtyDot.title = 'Unsaved changes';
+  docName.append(nameText, dirtyDot);
+  const overflow = btn('ce-mobile-menu ce-menu-trigger', 'More commands', 'More commands');
+  overflow.append(icon('more'));
+  overflow.dataset.menu = 'All';
+  header.append(menuSet, docName, overflow);
+
+  // A compact desktop command row; the phone-only toolbar below is a different
+  // presentation, not a different command implementation or document state.
+  const quickActions = el('div', 'ce-quick-actions');
+  header.insertBefore(quickActions, docName);
+  const desktopSave = el('div', 'ce-desktop-save');
+  header.insertBefore(desktopSave, overflow);
+  const toolbar = el('div', 'ce-toolbar');
+  toolbar.setAttribute('aria-label', 'Document actions');
+
+  // CM6-MIGRATION 2/8 — SURFACE + DOCUMENT AUTHORITY.
+  // Replace this textarea with one EditorView mounted in an editor container.
+  // The view's EditorState becomes the editing authority. w.editor remains file
+  // identity/version + UI preferences; preserve text snapshots only at the host
+  // persistence boundary that actually needs them. Do not run a hidden textarea,
+  // a second undo stack or a continuously round-tripped text model alongside it.
+  const area = el('textarea', 'ce-editor');
+  area.setAttribute('aria-label', 'Text document');
+  area.setAttribute('autocapitalize', 'off');
+  area.setAttribute('autocomplete', 'off');
+  area.spellcheck = false;
+  area.value = state.text;
+  area.wrap = state.wrap ? 'soft' : 'off';
+  body.style.setProperty('--ce-text-step', state.textSize + 'px');
+
+  const findBar = el('form', 'ce-findbar');
+  findBar.hidden = true;
+  const findLabel = el('label', 'ce-sr-only', 'Find in document');
+  findLabel.htmlFor = instanceId + '-find';
+  const findInput = el('input', 'ce-find-input');
+  findInput.id = findLabel.htmlFor;
+  findInput.type = 'search';
+  findInput.placeholder = 'Find in document';
+  findInput.autocomplete = 'off';
+  findInput.spellcheck = false;
+  findInput.setAttribute('aria-label', 'Find in document');
+  const findCount = el('span', 'ce-find-count', '');
+  findCount.setAttribute('role', 'status');
+  const matchCase = btn('ce-iconbutton ce-match-case', 'Match case', 'Match case');
+  matchCase.textContent = 'Aa'; matchCase.setAttribute('aria-pressed', 'false');
+  const findPrev = btn('ce-iconbutton', 'Previous result'); findPrev.append(icon('up'));
+  const findNext = btn('ce-iconbutton', 'Next result'); findNext.append(icon('down'));
+  const findClose = btn('ce-iconbutton', 'Close search'); findClose.append(icon('close'));
+  findBar.append(findLabel, findInput, matchCase, findCount, findPrev, findNext, findClose);
+
+  // Navigation is temporary UI, not another permanent toolbar.
+  const lineBar = el('form', 'ce-linebar'); lineBar.hidden = true;
+  const lineLabel = el('label', '', 'Go to line');
+  const lineInput = el('input', 'ce-line-input');
+  lineInput.type = 'number'; lineInput.min = '1'; lineInput.step = '1';
+  lineInput.inputMode = 'numeric'; lineInput.required = true;
+  lineInput.setAttribute('aria-label', 'Line number'); lineLabel.append(lineInput);
+  const lineGo = el('button', 'ce-tool', 'Go'); lineGo.type = 'submit';
+  const lineHint = el('span', 'ce-line-hint');
+  const lineClose = btn('ce-iconbutton', 'Close line navigation'); lineClose.append(icon('close'));
+  lineBar.append(lineLabel, lineGo, lineHint, lineClose);
+
+  const status = el('div', 'ce-status');
+  const statusMessage = el('span', 'ce-status-message', 'Ready');
+  statusMessage.setAttribute('role', 'status');
+  statusMessage.setAttribute('aria-live', 'polite');
+  const metrics = el('div', 'ce-metrics');
+  const position = el('span', 'ce-position');
+  const words = el('span', 'ce-words');
+  const encoding = el('span', 'ce-encoding', 'UTF-8');
+  metrics.append(position, words, encoding);
+  status.append(statusMessage, metrics);
+
+  // Save As is explicitly distinct from Save. The former uses null expected
+  // version to create a destination; the server must reject existing files.
+  const backdrop = el('div', 'ce-dialog-backdrop'); backdrop.hidden = true;
+  const dialog = el('form', 'ce-dialog');
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', instanceId + '-save-title');
+  const dialogTitle = el('h2', '', 'Save a copy'); dialogTitle.id = instanceId + '-save-title';
+  const pathLabel = el('label', '', 'Destination path');
+  const pathInput = el('input', 'ce-path-input'); pathInput.type = 'text';
+  pathInput.setAttribute('aria-label', 'Destination path');
+  pathInput.autocomplete = 'off'; pathLabel.append(pathInput);
+  const dialogError = el('div', 'ce-dialog-error');
+  dialogError.setAttribute('role', 'alert'); dialogError.hidden = true;
+  const dialogActions = el('div', 'ce-dialog-actions');
+  const cancelSaveAs = btn('ce-dialog-cancel', 'Cancel', 'Cancel'); cancelSaveAs.textContent = 'Cancel';
+  const confirmSaveAs = el('button', 'ce-dialog-primary', 'Save copy'); confirmSaveAs.type = 'submit';
+  dialogActions.append(cancelSaveAs, confirmSaveAs);
+  dialog.append(dialogTitle, pathLabel, dialogError, dialogActions); backdrop.append(dialog);
+
+  // One command table serves menu, touch controls and keyboard shortcuts.
+  // Commands that need a real engine (replace/history/folding) are NOT fake or
+  // disabled placeholders. Native typing, undo/redo and clipboard still work.
+  const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
+  const shortcut = text => text.replaceAll('Ctrl', isApple ? 'Cmd' : 'Ctrl');
+  const commands = {
+    open: { label: 'Open…', ico: 'folder', key: 'Ctrl+O', file: true, run: openFile },
+    save: { label: 'Save', ico: 'save', key: 'Ctrl+S', file: true, run: () => save() },
+    saveAs: { label: 'Save As…', ico: 'copy', key: 'Ctrl+Shift+S', file: true, run: showSaveAs },
+    reload: { label: 'Reload from disk', ico: 'refresh', key: '', file: true, run: reload },
+    find: { label: 'Find…', ico: 'search', key: 'Ctrl+F', run: openFind },
+    findNext: { label: 'Find next', ico: 'down', key: 'F3', run: () => findInput.value ? findDirection(1) : openFind() },
+    findPrev: { label: 'Find previous', ico: 'up', key: 'Shift+F3', run: () => findInput.value ? findDirection(-1) : openFind() },
+    goLine: { label: 'Go to line…', ico: 'lines', key: '', run: openGoLine },
+    selectAll: { label: 'Select all', ico: 'select', key: 'Ctrl+A', run: () => { area.focus(); area.select(); } },
+    wrap: { label: 'Word wrap', ico: 'wrap', key: '', run: toggleWrap },
+    textLarger: { label: 'Increase text size', ico: 'plus', key: '', run: () => changeTextSize(1) },
+    textSmaller: { label: 'Decrease text size', ico: 'minus', key: '', run: () => changeTextSize(-1) },
+    textReset: { label: 'Reset text size', ico: 'text', key: '', run: () => changeTextSize(0) }
+  };
+  const groups = [
+    ['File', ['open', 'save', 'saveAs', 'reload']],
+    ['Edit', ['find', 'findNext', 'findPrev', 'goLine', 'selectAll']],
+    ['View', ['wrap', 'textLarger', 'textSmaller', 'textReset']]
+  ];
+  function commandEnabled(id) {
+    const cmd = commands[id];
+    return !!cmd && !disposed && !host.signal.aborted && !busy
+      && (state.loaded || id === 'open')
+      && (!cmd.file || !!owner)
+      && !(id === 'reload' && state.version == null)
+      && !(id === 'textLarger' && state.textSize >= 8)
+      && !(id === 'textSmaller' && state.textSize <= -2);
+  }
+  const menuButtons = [];
+  function commandItem(id) {
+    const cmd = commands[id];
+    const item = btn('ce-command', cmd.label);
+    item.dataset.command = id; item.tabIndex = -1;
+    item.setAttribute('role', id === 'wrap' ? 'menuitemcheckbox' : 'menuitem');
+    item.append(icon(cmd.ico), el('span', 'ce-command-label', cmd.label));
+    if (cmd.key) item.append(el('span', 'ce-shortcut', shortcut(cmd.key)));
+    if (id === 'wrap') item.setAttribute('aria-checked', String(state.wrap));
+    return item;
+  }
+  // These are menu BUTTONS, not an ARIA menubar with incomplete keyboard rules.
+  // Normal Tab reaches each trigger; each popup implements menu navigation.
+  for (const [group] of groups) {
+    const trigger = btn('ce-menu-trigger', group);
+    trigger.dataset.menu = group; trigger.textContent = group;
+    menuButtons.push(trigger); menuSet.append(trigger);
+  }
+  menuButtons.push(overflow);
+  const popup = el('div', 'ce-popup'); popup.hidden = true;
+  popup.id = instanceId + '-menu'; popup.setAttribute('role', 'menu');
+  popup.setAttribute('aria-label', 'Application commands');
+  for (const trigger of menuButtons) {
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-controls', popup.id);
+  }
+  header.append(popup);
+  function tool(id, parent) {
+    const cmd = commands[id];
+    const node = btn('ce-tool', cmd.label, cmd.label + (cmd.key ? ' (' + shortcut(cmd.key) + ')' : ''));
+    node.dataset.command = id;
+    node.append(icon(cmd.ico), el('span', 'ce-tool-label', cmd.label));
+    if (id === 'save') node.classList.add('ce-save-tool');
+    parent.append(node);
+  }
+  tool('reload', quickActions); tool('find', quickActions);
+  tool('save', desktopSave);
+  // Preserve the approved phone arrangement. Open is menu-only on desktop.
+  for (const id of ['open', 'save', 'find']) tool(id, toolbar);
+  body.append(header, toolbar, findBar, lineBar, area, status, backdrop);
+
+  function updateTitle() {
+    nameText.textContent = fileName();
+    docName.title = state.path;
+    dirtyDot.hidden = !state.dirty;
+    w.title = fileName() + (state.dirty ? ' *' : '') + ' — Text Editor';
+    const caption = body.closest('.window')?.querySelector('.window-caption .caption-text');
+    if (caption && caption.textContent !== w.title) caption.textContent = w.title;
+  }
+  function setNotice(message, kind = '') { if (disposed) return; notice = message; noticeKind = kind; updateStatus(); }
+  function updateStatus() {
+    if (disposed) return;
+    const defaultMessage = state.changed
+      ? 'File changed outside editor — reload or resolve in Files.'
+      : state.dirty ? 'Unsaved changes' : busy ? 'Working…' : 'Ready';
+    statusMessage.textContent = notice || defaultMessage;
+    statusMessage.title = statusMessage.textContent;
+    statusMessage.dataset.kind = noticeKind || (state.changed ? 'warning' : '');
+    updateTitle();
+    for (const button of body.querySelectorAll('[data-command]')) {
+      const id = button.dataset.command;
+      const enabled = commandEnabled(id);
+      // Disabled menu items remain focusable by arrow keys, but cannot execute.
+      if (button.getAttribute('role')?.startsWith('menuitem')) button.setAttribute('aria-disabled', String(!enabled));
+      else button.disabled = !enabled;
+      if (id === 'wrap') button.setAttribute('aria-checked', String(state.wrap));
+    }
+    confirmSaveAs.disabled = cancelSaveAs.disabled = pathInput.disabled = busy;
+    scheduleInfo();
+  }
+  function scheduleInfo() {
+    clearTimeout(infoTimer);
+    infoTimer = setTimeout(() => {
+      if (disposed || host.signal.aborted) return;
+      // CM6-MIGRATION 3/8 — use state.doc.lineAt(selection.main.head) and
+      // the engine selection for position/selection info. Avoid serializing the
+      // entire rope merely to display a caret coordinate. Counts can be debounced.
+      const text = area.value, caret = area.selectionDirection === 'backward' ? area.selectionStart : area.selectionEnd;
+      let line = 1, last = -1;
+      for (let i = 0; i < caret; i++) if (text.charCodeAt(i) === 10) { line++; last = i; }
+      let count = 0, inWord = false;
+      for (let i = 0; i < text.length; i++) {
+        const isSpace = /\s/.test(text[i]);
+        if (!isSpace && !inWord) count++;
+        inWord = !isSpace;
+      }
+      position.textContent = `Ln ${line}, Col ${caret - last}`;
+      words.textContent = `${count} words · ${text.length} chars`;
+    }, 100);
+  }
+
+  function closeMenu(restoreFocus = false) {
+    const previous = menuTrigger;
+    activeMenu = null;
+    previous?.setAttribute('aria-expanded', 'false');
+    menuTrigger = null; popup.hidden = true;
+    if (restoreFocus && previous?.isConnected) previous.focus();
+  }
+  function toggleMenu(group, trigger) {
+    if (activeMenu === group) { closeMenu(true); return; }
+    closeMenu();
+    activeMenu = group; menuTrigger = trigger;
+    trigger.setAttribute('aria-expanded', 'true');
+    popup.setAttribute('aria-label', group === 'All' ? 'Application commands' : group);
+    popup.replaceChildren();
+    for (const [label, ids] of groups) {
+      if (group !== 'All' && group !== label) continue;
+      if (group === 'All') {
+        const heading = el('div', 'ce-popup-heading', label);
+        heading.setAttribute('role', 'presentation'); popup.append(heading);
+      }
+      for (const id of ids) popup.append(commandItem(id));
+    }
+    popup.hidden = false;
+    // Popups belong to this app window, not the whole browser viewport. A short
+    // window or keyboard-reduced phone must still be able to reach every item.
+    popup.style.maxHeight = Math.max(0, Math.min(460, body.clientHeight - header.offsetHeight - 8)) + 'px';
+    const t = trigger.getBoundingClientRect(), h = header.getBoundingClientRect();
+    const left = Math.max(0, Math.min(t.left - h.left, h.width - popup.offsetWidth - 4));
+    popup.style.left = group === 'All' ? 'auto' : left + 'px';
+    popup.style.right = group === 'All' ? '8px' : 'auto';
+    updateStatus(); popup.querySelector('[data-command]')?.focus();
+  }
+  function execute(id) {
+    if (!commandEnabled(id) || !valid()) return;
+    commands[id].run();
+  }
+  header.addEventListener('click', event => {
+    const trigger = event.target.closest('[data-menu]');
+    if (trigger) { event.preventDefault(); toggleMenu(trigger.dataset.menu, trigger); }
+  });
+  header.addEventListener('keydown', event => {
+    const trigger = event.target.closest('[data-menu]');
+    if (!trigger || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    if (activeMenu !== trigger.dataset.menu) toggleMenu(trigger.dataset.menu, trigger);
+    const items = popup.querySelectorAll('[data-command]');
+    (event.key === 'ArrowUp' ? items[items.length - 1] : items[0])?.focus();
+  });
+  popup.addEventListener('keydown', event => {
+    const items = [...popup.querySelectorAll('[data-command]')];
+    const i = items.indexOf(document.activeElement);
+    let next;
+    if (event.key === 'ArrowDown') next = (i + 1) % items.length;
+    if (event.key === 'ArrowUp') next = (i + items.length - 1) % items.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = items.length - 1;
+    if (next != null) { event.preventDefault(); items[next]?.focus(); }
+    if (event.key === 'Tab') {
+      // Restore the trigger before the browser performs its ordinary Tab move.
+      closeMenu(true);
+    }
+  });
+  body.addEventListener('click', event => {
+    const button = event.target.closest('[data-command]');
+    if (!button || !commandEnabled(button.dataset.command)) return;
+    event.preventDefault();
+    const id = button.dataset.command;
+    if (activeMenu) closeMenu(true);
+    execute(id);
+  });
+  function outsideMenu(event) {
+    if (activeMenu && !popup.contains(event.target) && !menuTrigger?.contains(event.target)) closeMenu();
+  }
+  document.addEventListener('pointerdown', outsideMenu, true);
+  // Never rebuild/remount an editor just because its window changes size.
+  // Only close a now-misplaced popup when container geometry changes.
+  const layoutObserver = new ResizeObserver(() => {
+    if (activeMenu) {
+      const hadFocus = popup.contains(document.activeElement);
+      closeMenu(); if (hadFocus) area.focus();
+    }
+  });
+  layoutObserver.observe(body);
+
+  async function load({ target = state.path, checkServer = false } = {}) {
+    if (busy || !valid()) return;
+    busy = true; area.disabled = true; setNotice('Opening file…');
+    const token = ++revision;
+    try {
+      const c = await mirrorFileContext();
+      if (!valid() || !c.valid()) return;
+      let offline = false;
+      if (checkServer) try { await c.files.sync(); } catch { offline = true; }
+      const r = await c.files.read(target);
+      if (!valid() || token !== revision) return;
+      if (r.data.length > 2 * 1024 * 1024 || r.data.slice(0, 1024).includes(0))
+        throw Error('This file cannot be opened as text.');
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
+      state.path = target; state.text = text; state.version = r.version;
+      state.loaded = true; state.dirty = false; state.changed = false;
+      // CM6-MIGRATION 4/8 — loading a different file (or explicit reload) sets
+      // a fresh EditorState with fresh history. A normal edit must instead be a
+      // transaction; never reset EditorState on every keystroke or resize.
+      area.value = text;
+      updateFindCount(); lineBar.hidden = true;
+      setNotice(r.status === 'conflict' ? 'Conflicting file copies — resolve in Files.'
+        : offline ? 'Loaded browser copy; server could not be reached.' : '',
+        r.status === 'conflict' ? 'warning' : '');
+    } catch (error) {
+      if (valid()) setNotice(error.message, 'error');
+    } finally {
+      busy = false;
+      if (valid()) area.disabled = !state.loaded;
+      if (!disposed) updateStatus();
+    }
+  }
+  async function observe(c) {
+    if (!valid() || busy || !state.loaded || !state.version) return;
+    const observedPath = state.path, observedVersion = state.version;
+    try {
+      const r = await c.files.read(observedPath);
+      if (!valid() || busy || state.path !== observedPath || state.version !== observedVersion) return;
+      if (r.status === 'conflict') {
+        state.changed = true;
+        setNotice('Conflicting file copies — resolve in Files.', 'warning');
+      } else if (r.version !== observedVersion) {
+        state.changed = true;
+        setNotice('', '');
+      }
+    } catch {
+      if (valid() && !busy && state.path === observedPath) {
+        state.changed = true;
+        setNotice('Saved file unavailable. Your open text is unchanged.', 'warning');
+      }
+    }
+  }
+  queueMicrotask(async () => {
+    try {
+      const c = await mirrorFileContext();
+      if (!valid() || !c.valid()) return;
+      unsubscribe = c.files.subscribe(() => observe(c));
+      await observe(c);
+    } catch (error) { if (valid()) setNotice(error.message, 'error'); }
+  });
+
+  async function save(target = state.path, asCopy = false) {
+    if (busy || !valid()) return;
+    if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
+    busy = true;
+    // CM6-MIGRATION: serialize view.state.doc once at this save boundary. Keep
+    // expected-version writes and the in-flight-save/newer-edits invariant.
+    const snapshot = area.value;
+    setNotice('Saving…');
+    try {
+      const c = await mirrorFileContext();
+      if (!valid() || !c.valid()) return;
+      const normalized = c.path(target);
+      if (asCopy && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
+      const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
+      if (!valid()) return;
+      state.path = normalized; state.version = r.version;
+      state.changed = false; state.text = area.value;
+      state.dirty = area.value !== snapshot;
+      hideSaveAs();
+      setNotice(state.dirty ? 'Earlier revision saved; newer edits remain unsaved.'
+        : 'Saved locally; syncing with server…');
+    } catch (error) {
+      if (valid()) {
+        setNotice(error.message, 'error');
+        if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
+      }
+    } finally { busy = false; if (!disposed) updateStatus(); }
+  }
+  async function openFile() {
+    if (busy || !valid()) return;
+    if (state.dirty && !confirm('Discard unsaved changes and open another file?')) return;
+    const beforePicker = editRevision;
+    try {
+      const selected = await host.storage.pickFile({
+        extensions: ['.txt', '.md', '.py', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf'],
+        signal: host.signal
+      });
+      if (!selected || !valid()) return;
+      // A picker can remain open while the user keeps typing. Do not discard
+      // edits made *after* the first confirmation without asking again.
+      if (editRevision !== beforePicker && !confirm('Discard edits made while the file picker was open?')) return;
+      await load({ target: selected });
+    } catch (error) { if (valid()) setNotice(error.message, 'error'); }
+  }
+  function reload() {
+    if (!state.dirty || confirm('Discard unsaved changes and reload?')) load({ checkServer: true });
+  }
+  function showSaveAs() {
+    closeMenu();
+    pathInput.value = state.path;
+    dialogError.hidden = true;
+    backdrop.hidden = false;
+    pathInput.focus(); pathInput.select();
+  }
+  function hideSaveAs() {
+    const wasOpen = !backdrop.hidden; backdrop.hidden = true;
+    if (wasOpen && !disposed) area.focus();
+  }
+  cancelSaveAs.addEventListener('click', () => { if (!busy) hideSaveAs(); });
+  backdrop.addEventListener('click', event => { if (event.target === backdrop && !busy) hideSaveAs(); });
+  dialog.addEventListener('submit', event => {
+    event.preventDefault();
+    if (pathInput.value.trim()) save(pathInput.value, true);
+  });
+  function toggleWrap() {
+    // CM6-MIGRATION 5/8 — reconfigure a Compartment with EditorView.lineWrapping
+    // (or []) so changing wrap does not reset content, selection or undo history.
+    state.wrap = !state.wrap;
+    area.wrap = state.wrap ? 'soft' : 'off';
+    updateStatus();
+  }
+  function changeTextSize(step) {
+    state.textSize = step === 0 ? 0 : Math.max(-2, Math.min(8, state.textSize + step));
+    body.style.setProperty('--ce-text-step', state.textSize + 'px');
+    // CM6-MIGRATION: apply scoped editor theme/CSS then requestMeasure() if
+    // geometry changes. Text size is not a document mutation or browser zoom.
+    updateStatus();
+  }
+  function openGoLine() {
+    findBar.hidden = true; lineBar.hidden = false;
+    const count = area.value.split('\n').length;
+    lineInput.max = String(count);
+    lineInput.value = String(area.value.slice(0, area.selectionStart).split('\n').length);
+    lineHint.textContent = `of ${count}`;
+    lineInput.focus(); lineInput.select();
+  }
+  lineBar.addEventListener('submit', event => {
+    event.preventDefault();
+    const target = Number(lineInput.value), lines = area.value.split('\n');
+    if (!Number.isInteger(target) || target < 1 || target > lines.length) return;
+    let offset = 0;
+    for (let i = 0; i < target - 1; i++) offset += lines[i].length + 1;
+    revealSelection(offset, offset);
+    lineBar.hidden = true; scheduleInfo();
+  });
+  lineClose.addEventListener('click', () => { lineBar.hidden = true; area.focus(); });
+
+  // CM6-MIGRATION 6/8 — replace this textarea-only literal search with the
+  // shared @codemirror/search support. Keep one set of commands and one visible
+  // find UI: don't mount a second CM search toolbar alongside this one.
+  // Use SearchQuery/search state, engine selections and scrollIntoView. Add
+  // replace as an undoable transaction, not string replacement on a second buffer.
+  let matches = [], currentMatch = -1;
+  function openFind() {
+    lineBar.hidden = true; findBar.hidden = false;
+    const selection = area.value.slice(area.selectionStart, area.selectionEnd);
+    if (selection && !selection.includes('\n') && selection.length <= 120) findInput.value = selection;
+    updateFindCount(); findInput.focus(); findInput.select();
+  }
+  function closeFind() { findBar.hidden = true; area.focus(); }
+  function renderFindCount() {
+    findCount.textContent = !findInput.value ? '' : matches.length
+      ? (currentMatch >= 0 ? `${currentMatch + 1} / ${matches.length}` : `${matches.length} found`)
+      : 'No results';
+    findPrev.disabled = findNext.disabled = !matches.length;
+  }
+  function updateFindCount() {
+    matches = []; currentMatch = -1;
+    if (findInput.value) {
+      // Escape every regex metacharacter: this is literal search, NOT a regex UI.
+      // Match the original string so Unicode case conversion never shifts offsets.
+      const escaped = findInput.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(escaped, matchCase.getAttribute('aria-pressed') === 'true' ? 'gu' : 'giu');
+      for (const match of area.value.matchAll(pattern)) matches.push([match.index, match.index + match[0].length]);
+    }
+    renderFindCount();
+  }
+  function revealSelection(start, end) {
+    // Native textarea focus reveals a collapsed caret, but not necessarily a
+    // non-collapsed selection. Reveal the destination caret first, then select
+    // the requested range. This also works for F3 inside the already-focused
+    // editor. No cloned measuring surface or guessed wrapped-line geometry.
+    // CM6: dispatch {selection, scrollIntoView: true} instead.
+    area.blur(); area.setSelectionRange(start, start); area.focus();
+    area.setSelectionRange(start, end);
+  }
+  function findDirection(direction) {
+    if (!findInput.value) return;
+    updateFindCount();
+    if (!matches.length) return;
+    if (direction > 0) {
+      currentMatch = matches.findIndex(([start]) => start >= area.selectionEnd);
+      if (currentMatch < 0) currentMatch = 0;
+    } else {
+      currentMatch = matches.findLastIndex(([start]) => start < area.selectionStart);
+      if (currentMatch < 0) currentMatch = matches.length - 1;
+    }
+    const [start, end] = matches[currentMatch];
+    revealSelection(start, end);
+    scheduleInfo(); renderFindCount();
+  }
+  findInput.addEventListener('input', updateFindCount);
+  matchCase.addEventListener('click', () => {
+    matchCase.setAttribute('aria-pressed', String(matchCase.getAttribute('aria-pressed') !== 'true'));
+    updateFindCount(); findInput.focus();
+  });
+  findBar.addEventListener('submit', event => { event.preventDefault(); findDirection(1); });
+  findPrev.addEventListener('click', () => findDirection(-1));
+  findNext.addEventListener('click', () => findDirection(1));
+  findClose.addEventListener('click', closeFind);
+  findInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); findDirection(event.shiftKey ? -1 : 1); }
+  });
+
+  // CM6-MIGRATION 7/8 — an EditorView.updateListener handles docChanged and
+  // selectionSet. Update dirty state/metrics there. Never synthesize textarea
+  // input events from CM, and never reset content on each state notification.
+  area.addEventListener('input', () => {
+    editRevision++;
+    state.text = area.value;
+    state.dirty = true;
+    notice = ''; noticeKind = '';
+    updateStatus();
+    if (!findBar.hidden) updateFindCount();
+  });
+  for (const type of ['click', 'keyup', 'select']) area.addEventListener(type, scheduleInfo);
+  body.addEventListener('keydown', event => {
+    if (disposed || event.isComposing) return;
+    const mod = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    // A modal owns focus and shortcuts. Saving/opening the editor behind it is
+    // never a side effect of typing a shortcut into the destination field.
+    if (!backdrop.hidden) {
+      if (event.key === 'Escape' && !busy) { hideSaveAs(); event.preventDefault(); }
+      if (event.key === 'Tab') {
+        const inputs = [...dialog.querySelectorAll('input:not(:disabled), button:not(:disabled)')];
+        const first = inputs[0], last = inputs[inputs.length - 1];
+        if (!inputs.length) { event.preventDefault(); return; }
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+      if (mod && ['s', 'o', 'f'].includes(key)) event.preventDefault();
+      return;
+    }
+    if (event.key === 'Escape') {
+      if (activeMenu) { closeMenu(true); event.preventDefault(); }
+      else if (!findBar.hidden) { closeFind(); event.preventDefault(); }
+      else if (!lineBar.hidden) { lineBar.hidden = true; area.focus(); event.preventDefault(); }
+      return;
+    }
+    if (event.key === 'F3' && !mod && !event.altKey) {
+      event.preventDefault(); execute(event.shiftKey ? 'findPrev' : 'findNext'); return;
+    }
+    if (mod && !event.altKey) {
+      let id;
+      if (key === 's') id = event.shiftKey ? 'saveAs' : 'save';
+      else if (key === 'o') id = 'open';
+      else if (key === 'f') id = 'find';
+      if (id) { event.preventDefault(); closeMenu(); execute(id); }
+    }
+    // Keep native textarea typing, IME, clipboard and undo/redo untouched.
+    // Tab/Shift+Tab move focus rather than trapping keyboard users. The previous
+    // setRangeText('    ') handler also bypassed native undo. CM6 can later add
+    // undoable indentation with an explicit, accessible keyboard escape policy.
+  });
+
+  updateStatus();
+  if (!state.loaded) {
+    area.disabled = true;
+    queueMicrotask(() => load());
+  } else if (!owner) {
+    area.disabled = true;
+    setNotice('Sign in to use your files.', 'warning');
+  }
+  return {
+    element: body,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      // CM6-MIGRATION 8/8 — call this instance's view.destroy(), release its
+      // listeners/extensions, and ignore late async module or file results.
+      // Do not tear down the shared module or another app's editor view.
+      body.inert = true; closeMenu();
+      layoutObserver.disconnect();
+      revision++;
+      unsubscribe();
+      clearTimeout(infoTimer);
+      document.removeEventListener('pointerdown', outsideMenu, true);
+    }
+  };
 }
+
+const ICONS = {
+  document: ['M6 3h8l5 5v13H6z','M14 3v6h5','M9 13h7','M9 17h7'],
+  folder: ['M3 7V5h6l2 2h10v12H3z','M3 10h18'],
+  save: ['M4 3h14l3 3v15H4z','M8 3v7h9V3','M8 21v-8h9v8'],
+  copy: ['M8 7h12v14H8z','M4 17H3V3h12v3'],
+  refresh: ['M20 8a8 8 0 0 0-14-2L4 8','M4 3v5h5','M4 16a8 8 0 0 0 14 2l2-2','M20 21v-5h-5'],
+  search: ['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z','m16.5 16.5 4.5 4.5'],
+  wrap: ['M3 6h18','M3 10h18','M3 14h12a3 3 0 0 1 0 6h-4','m13 18-2 2 2 2','M3 18h5'],
+  select: ['M6 3H3v3','M18 3h3v3','M3 18v3h3','M21 18v3h-3','M9 8h6','M12 8v8'],
+  more: ['M5 12h.01','M12 12h.01','M19 12h.01'],
+  up: ['m6 14 6-6 6 6'],
+  down: ['m6 10 6 6 6-6'],
+  close: ['M5 5l14 14','M19 5 5 19'],
+  lines: ['M9 5h12','M9 12h12','M9 19h12','M3 5h1','M3 12h1','M3 19h1'],
+  plus: ['M12 5v14','M5 12h14'],
+  minus: ['M5 12h14'],
+  text: ['M4 5h16','M12 5v15','M8 20h8']
+};
+
+const STYLES = `
+.codi-text-editor {
+  --ce-bg: #fff; --ce-chrome: #f7f8fa; --ce-border: #dbe1e8;
+  --ce-fg: #1d2835; --ce-muted: #5c6876; --ce-hover: #e8edf5;
+  --ce-primary: #245fd7; --ce-primary-fg: white;
+  position: relative; display: flex; flex-direction: column; width: 100%;
+  min-width: 0; min-height: 0; overflow: hidden; container-type: inline-size;
+  background: var(--ce-bg); color: var(--ce-fg);
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.codi-text-editor *, .codi-text-editor *::before, .codi-text-editor *::after { box-sizing: border-box; }
+.codi-text-editor button, .codi-text-editor input, .codi-text-editor textarea { font: inherit; }
+.codi-text-editor button { cursor: pointer; color: inherit; }
+.codi-text-editor button:disabled { opacity: .45; cursor: default; }
+.codi-text-editor button:focus-visible, .codi-text-editor input:focus-visible, .codi-text-editor textarea:focus-visible { outline: 2px solid var(--ce-primary); outline-offset: -2px; }
+.codi-text-editor [hidden] { display: none !important; }
+.ce-header { position: relative; z-index: 6; display: flex; flex: 0 0 auto; align-items: center; gap: 6px; min-height: 40px; padding: 2px 8px; border-bottom: 1px solid var(--ce-border); background: var(--ce-chrome); }
+.ce-menu-set { display: flex; align-items: center; gap: 1px; }
+.ce-menu-trigger { border: 0; border-radius: 5px; padding: 6px 11px; background: transparent; }
+.ce-menu-trigger:hover, .ce-menu-trigger[aria-expanded='true'] { background: var(--ce-hover); }
+.ce-docname { display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center; min-width: 0; gap: 7px; color: var(--ce-muted); font-size: 12px; padding: 0 4px; }
+.ce-docname > svg { flex-shrink: 0; }
+.ce-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.ce-dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: #e49c17; flex: none; }
+.ce-mobile-menu { display: none; padding: 5px; }
+.ce-popup { position: absolute; top: calc(100% - 1px); left: 0; z-index: 20; width: min(290px, calc(100% - 16px)); max-height: min(460px, 64vh); overflow-y: auto; padding: 5px; border: 1px solid var(--ce-border); border-radius: 9px; background: var(--ce-bg); box-shadow: 0 10px 30px #152a482e; }
+.ce-popup-heading { padding: 8px 10px 3px; color: var(--ce-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+.ce-command { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 36px; border: none; padding: 7px 10px; border-radius: 5px; background: transparent; text-align: left; }
+.ce-command:hover:not([aria-disabled='true']) { background: var(--ce-hover); }
+.ce-command-label { flex: 1; }
+.ce-shortcut { margin-left: 6px; color: var(--ce-muted); font-size: 11px; }
+.ce-command[aria-checked='true']::after { content: '✓'; color: var(--ce-primary); }
+.ce-quick-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; padding-left: 7px; border-left: 1px solid var(--ce-border); }
+.ce-desktop-save { display: flex; flex: 0 0 auto; }
+.ce-command[aria-disabled='true'] { opacity: .45; cursor: default; }
+.ce-toolbar { display: none; align-items: center; gap: 5px; min-width: 0; flex: 0 0 auto; min-height: 44px; padding: 5px 9px; border-bottom: 1px solid var(--ce-border); background: var(--ce-bg); }
+.ce-tool, .ce-iconbutton { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; gap: 7px; min-height: 32px; padding: 5px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; white-space: nowrap; }
+.ce-tool:hover:not(:disabled), .ce-iconbutton:hover:not(:disabled) { background: var(--ce-hover); }
+.ce-save-tool { background: var(--ce-primary); color: var(--ce-primary-fg) !important; }
+.ce-save-tool:hover:not(:disabled) { background: #174bb5; }
+.ce-editor { display: block; flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; resize: none; padding: 18px 23px; border: none; border-radius: 0; background: var(--ce-bg); color: var(--ce-fg); font: calc(14px + var(--ce-text-step, 0px))/1.6 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace !important; tab-size: 4; outline-offset: -3px; }
+.ce-editor:focus { outline: none; }
+.ce-findbar, .ce-linebar { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 7px 10px; border-bottom: 1px solid var(--ce-border); background: var(--ce-chrome); }
+.ce-find-input { min-width: 0; flex: 1; padding: 6px 9px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-bg); color: var(--ce-fg); }
+.ce-find-count { color: var(--ce-muted); min-width: 58px; text-align: center; font-size: 12px; }
+.ce-iconbutton { width: 32px; padding: 5px; }
+.ce-match-case[aria-pressed='true'] { background: var(--ce-hover); color: var(--ce-primary); border-color: var(--ce-primary); }
+.ce-linebar label { display: flex; align-items: center; gap: 10px; }
+.ce-line-input { width: 80px; padding: 5px 7px; border: 1px solid var(--ce-border); border-radius: 5px; background: var(--ce-bg); color: var(--ce-fg); }
+.ce-line-hint { flex: 1; color: var(--ce-muted); }
+.ce-dialog-error { font-size: 12px; color: #c12e39; overflow-wrap: anywhere; }
+.ce-dialog-backdrop { overflow-y: auto; }
+.ce-dialog { max-height: 100%; overflow-y: auto; }
+.ce-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 29px; flex: 0 0 auto; padding: 4px 50px 4px 11px; border-top: 1px solid var(--ce-border); background: var(--ce-chrome); color: var(--ce-muted); font-size: 11px; }
+.ce-status-message { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ce-status-message[data-kind='error'] { color: #c12e39; }
+.ce-status-message[data-kind='warning'] { color: #ad6a00; }
+.ce-metrics { display: flex; align-items: center; flex-shrink: 0; gap: 12px; white-space: nowrap; }
+.ce-dialog-backdrop { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: #0d1b3280; }
+.ce-dialog { display: flex; flex-direction: column; gap: 14px; width: min(420px, 100%); padding: 22px; background: var(--ce-bg); border: 1px solid var(--ce-border); border-radius: 12px; box-shadow: 0 24px 50px #050d183b; }
+.ce-dialog h2 { font-size: 17px; font-weight: 650; margin: 0; }
+.ce-dialog label { display: flex; flex-direction: column; gap: 7px; color: var(--ce-muted); }
+.ce-path-input { padding: 9px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-bg); color: var(--ce-fg); }
+.ce-dialog-actions { display: flex; justify-content: end; gap: 8px; }
+.ce-dialog-actions button { padding: 8px 14px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-chrome); }
+.ce-dialog-actions .ce-dialog-primary { border-color: var(--ce-primary); background: var(--ce-primary); color: white; }
+.ce-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+@container (min-width: 521px) and (max-width: 700px) {
+  .ce-menu-trigger { padding: 6px 8px; }
+  .ce-tool { padding: 5px 8px; }
+  .ce-docname > svg { display: none; }
+  .ce-name { max-width: 130px; }
+  .ce-words { display: none; }
+}
+@container (max-width: 520px) {
+  .ce-header { min-height: 44px; padding: 3px 9px; }
+  .ce-menu-set, .ce-quick-actions, .ce-desktop-save { display: none; }
+  .ce-docname { justify-content: flex-start; margin-right: auto; color: var(--ce-fg); font-size: 14px; }
+  .ce-name { max-width: none; }
+  .ce-mobile-menu { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; width: 44px; height: 40px; }
+  .ce-toolbar { display: flex; order: 2; min-height: 52px; justify-content: space-around; gap: 2px; padding: 5px 7px; border-top: 1px solid var(--ce-border); border-bottom: 0; }
+  .ce-toolbar .ce-tool { min-width: 44px; min-height: 40px; }
+  .ce-toolbar .ce-tool-label { display: none; }
+  .ce-findbar, .ce-linebar { order: 0; }
+  .ce-findbar { padding: 5px 7px; gap: 2px; }
+  .ce-findbar .ce-iconbutton { width: 36px; min-height: 40px; }
+  .ce-find-count { min-width: 53px; font-size: 11px; }
+  .ce-find-input, .ce-line-input, .ce-path-input { font-size: 16px !important; }
+  .ce-editor { order: 1; }
+  .ce-status { order: 3; }
+  .ce-editor { padding: 14px 15px; font-size: calc(16px + var(--ce-text-step, 0px)) !important; }
+  .ce-encoding, .ce-words { display: none; }
+  .ce-status { min-height: 27px; }
+  .ce-status-message[data-kind='error'], .ce-status-message[data-kind='warning'] { white-space: normal; overflow-wrap: anywhere; }
+  .ce-shortcut { display: none; }
+  .ce-popup { max-height: min(440px, 62dvh); }
+}
+@media (pointer: coarse) {
+  .ce-command { min-height: 44px; }
+  .ce-iconbutton { width: 42px; min-height: 42px; }
+  .ce-menu-trigger { min-height: 40px; }
+}
+@media (prefers-color-scheme: dark) {
+  .codi-text-editor { --ce-bg: #171c24; --ce-chrome: #202734; --ce-border: #353f50;
+    --ce-fg: #e4e9f3; --ce-muted: #9aa8bb; --ce-hover: #303b4f; --ce-primary: #356de2; }
+  .ce-status-message[data-kind='error'], .ce-dialog-error { color: #ff8d9a; }
+  .ce-status-message[data-kind='warning'] { color: #ffcc70; }
+}
+`;
