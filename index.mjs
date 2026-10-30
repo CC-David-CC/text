@@ -3,15 +3,7 @@
  * Phone: the approved document header + Open / Save / Find bottom bar.
  * These are presentations of ONE command table and ONE editing surface.
  *
- * CM6-MIGRATION 1/8 — SHARED SYSTEM DEPENDENCY (not implemented here).
- * When CodiServer supplies its shared CodeMirror 6 module, consume that module
- * rather than embedding a private bundle or downloading one from a CDN.
- * Share immutable code/extensions, NOT a mutable EditorView/document singleton.
- * Each mount owns its own EditorState, EditorView, history and disposal.
- * Keep mount(host) synchronous. Any later async module acquisition must check
- * this instance's disposal/identity before creating a view. Do not introduce a
- * second editable surface while loading. No new host service API is assumed.
- * See docs/EXPERIENCE.md for the migration boundary and acceptance criteria.
+ * The shared CodeMirror tool supplies independent per-window editor state.
  */
 let nextInstanceId = 0;
 
@@ -95,19 +87,12 @@ export function mount(host) {
   const toolbar = el('div', 'ce-toolbar');
   toolbar.setAttribute('aria-label', 'Document actions');
 
-  // CM6-MIGRATION 2/8 — SURFACE + DOCUMENT AUTHORITY.
-  // Replace this textarea with one EditorView mounted in an editor container.
-  // The view's EditorState becomes the editing authority. w.editor remains file
-  // identity/version + UI preferences; preserve text snapshots only at the host
-  // persistence boundary that actually needs them. Do not run a hidden textarea,
-  // a second undo stack or a continuously round-tripped text model alongside it.
-  const area = el('textarea', 'ce-editor');
-  area.setAttribute('aria-label', 'Text document');
-  area.setAttribute('autocapitalize', 'off');
-  area.setAttribute('autocomplete', 'off');
-  area.spellcheck = false;
-  area.value = state.text;
-  area.wrap = state.wrap ? 'soft' : 'off';
+  // The per-window CodeMirror view is the editing authority.
+  const area = el('div', 'ce-editor');
+  let editor = null;
+  const value = () => editor ? editor.getText() : state.text;
+  const selection = () => editor ? editor.getSelection() : {from:0,to:0,head:0};
+  const focusEditor = () => editor?.focus();
   body.style.setProperty('--ce-text-step', state.textSize + 'px');
 
   const findBar = el('form', 'ce-findbar');
@@ -129,6 +114,12 @@ export function mount(host) {
   const findNext = btn('ce-iconbutton', 'Next result'); findNext.append(icon('down'));
   const findClose = btn('ce-iconbutton', 'Close search'); findClose.append(icon('close'));
   findBar.append(findLabel, findInput, matchCase, findCount, findPrev, findNext, findClose);
+  const replaceBar = el('form', 'ce-replacebar'); replaceBar.hidden = true;
+  const replaceInput = el('input', 'ce-find-input'); replaceInput.type = 'text'; replaceInput.placeholder = 'Replace with'; replaceInput.setAttribute('aria-label', 'Replace with');
+  const replaceOne = el('button', 'ce-tool', 'Replace'); replaceOne.type = 'submit';
+  const replaceAllButton = btn('ce-tool', 'Replace all'); replaceAllButton.textContent = 'Replace all';
+  replaceBar.append(replaceInput, replaceOne, replaceAllButton);
+
 
   // Navigation is temporary UI, not another permanent toolbar.
   const lineBar = el('form', 'ce-linebar'); lineBar.hidden = true;
@@ -174,8 +165,7 @@ export function mount(host) {
   dialog.append(dialogTitle, pathLabel, dialogError, dialogActions); backdrop.append(dialog);
 
   // One command table serves menu, touch controls and keyboard shortcuts.
-  // Commands that need a real engine (replace/history/folding) are NOT fake or
-  // disabled placeholders. Native typing, undo/redo and clipboard still work.
+  // Editing commands operate on this window’s CodeMirror view.
   const isApple = /Mac|iPhone|iPad/.test(navigator.platform);
   const shortcut = text => text.replaceAll('Ctrl', isApple ? 'Cmd' : 'Ctrl');
   const commands = {
@@ -183,11 +173,16 @@ export function mount(host) {
     save: { label: 'Save', ico: 'save', key: 'Ctrl+S', file: true, run: () => save() },
     saveAs: { label: 'Save As…', ico: 'copy', key: 'Ctrl+Shift+S', file: true, run: showSaveAs },
     reload: { label: 'Reload from disk', ico: 'refresh', key: '', file: true, run: reload },
+    undo: { label: 'Undo', ico: 'undo', key: 'Ctrl+Z', run: () => editor?.undo() },
+    redo: { label: 'Redo', ico: 'redo', key: 'Ctrl+Shift+Z', run: () => editor?.redo() },
     find: { label: 'Find…', ico: 'search', key: 'Ctrl+F', run: openFind },
+    replace: { label: 'Replace…', ico: 'replace', key: '', run: openReplace },
+    indent: { label: 'Indent selection', ico: 'indent', key: '', run: () => editor?.indent() },
+    outdent: { label: 'Outdent selection', ico: 'outdent', key: '', run: () => editor?.outdent() },
     findNext: { label: 'Find next', ico: 'down', key: 'F3', run: () => findInput.value ? findDirection(1) : openFind() },
     findPrev: { label: 'Find previous', ico: 'up', key: 'Shift+F3', run: () => findInput.value ? findDirection(-1) : openFind() },
     goLine: { label: 'Go to line…', ico: 'lines', key: '', run: openGoLine },
-    selectAll: { label: 'Select all', ico: 'select', key: 'Ctrl+A', run: () => { area.focus(); area.select(); } },
+    selectAll: { label: 'Select all', ico: 'select', key: 'Ctrl+A', run: () => { editor?.selectAll(); } },
     wrap: { label: 'Word wrap', ico: 'wrap', key: '', run: toggleWrap },
     textLarger: { label: 'Increase text size', ico: 'plus', key: '', run: () => changeTextSize(1) },
     textSmaller: { label: 'Decrease text size', ico: 'minus', key: '', run: () => changeTextSize(-1) },
@@ -195,13 +190,13 @@ export function mount(host) {
   };
   const groups = [
     ['File', ['open', 'save', 'saveAs', 'reload']],
-    ['Edit', ['find', 'findNext', 'findPrev', 'goLine', 'selectAll']],
+    ['Edit', ['undo', 'redo', 'find', 'replace', 'findNext', 'findPrev', 'goLine', 'selectAll', 'indent', 'outdent']],
     ['View', ['wrap', 'textLarger', 'textSmaller', 'textReset']]
   ];
   function commandEnabled(id) {
     const cmd = commands[id];
     return !!cmd && !disposed && !host.signal.aborted && !busy
-      && (state.loaded || id === 'open')
+      && !!editor && (state.loaded || id === 'open')
       && (!cmd.file || !!owner)
       && !(id === 'reload' && state.version == null)
       && !(id === 'textLarger' && state.textSize >= 8)
@@ -247,7 +242,7 @@ export function mount(host) {
   tool('save', desktopSave);
   // Preserve the approved phone arrangement. Open is menu-only on desktop.
   for (const id of ['open', 'save', 'find']) tool(id, toolbar);
-  body.append(header, toolbar, findBar, lineBar, area, status, backdrop);
+  body.append(header, toolbar, findBar, replaceBar, lineBar, area, status, backdrop);
 
   function updateTitle() {
     nameText.textContent = fileName();
@@ -282,10 +277,7 @@ export function mount(host) {
     clearTimeout(infoTimer);
     infoTimer = setTimeout(() => {
       if (disposed || host.signal.aborted) return;
-      // CM6-MIGRATION 3/8 — use state.doc.lineAt(selection.main.head) and
-      // the engine selection for position/selection info. Avoid serializing the
-      // entire rope merely to display a caret coordinate. Counts can be debounced.
-      const text = area.value, caret = area.selectionDirection === 'backward' ? area.selectionStart : area.selectionEnd;
+      const text = value(), caret = selection().head;
       let line = 1, last = -1;
       for (let i = 0; i < caret; i++) if (text.charCodeAt(i) === 10) { line++; last = i; }
       let count = 0, inWord = false;
@@ -378,14 +370,14 @@ export function mount(host) {
   const layoutObserver = new ResizeObserver(() => {
     if (activeMenu) {
       const hadFocus = popup.contains(document.activeElement);
-      closeMenu(); if (hadFocus) area.focus();
+      closeMenu(); if (hadFocus) focusEditor();
     }
   });
   layoutObserver.observe(body);
 
   async function load({ target = state.path, checkServer = false } = {}) {
     if (busy || !valid()) return;
-    busy = true; area.disabled = true; setNotice('Opening file…');
+    busy = true; editor?.setReadOnly(true); setNotice('Opening file…');
     const token = ++revision;
     try {
       const c = await mirrorFileContext();
@@ -399,10 +391,8 @@ export function mount(host) {
       const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
       state.path = target; state.text = text; state.version = r.version;
       state.loaded = true; state.dirty = false; state.changed = false;
-      // CM6-MIGRATION 4/8 — loading a different file (or explicit reload) sets
-      // a fresh EditorState with fresh history. A normal edit must instead be a
-      // transaction; never reset EditorState on every keystroke or resize.
-      area.value = text;
+      // Replacing a document creates fresh editor history.
+      editor.replaceDocument(text, target);
       updateFindCount(); lineBar.hidden = true;
       setNotice(r.status === 'conflict' ? 'Conflicting file copies — resolve in Files.'
         : offline ? 'Loaded browser copy; server could not be reached.' : '',
@@ -411,7 +401,7 @@ export function mount(host) {
       if (valid()) setNotice(error.message, 'error');
     } finally {
       busy = false;
-      if (valid()) area.disabled = !state.loaded;
+      if (valid()) editor?.setReadOnly(!state.loaded);
       if (!disposed) updateStatus();
     }
   }
@@ -448,9 +438,7 @@ export function mount(host) {
     if (busy || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     busy = true;
-    // CM6-MIGRATION: serialize view.state.doc once at this save boundary. Keep
-    // expected-version writes and the in-flight-save/newer-edits invariant.
-    const snapshot = area.value;
+    const snapshotDoc = editor.snapshot(), snapshot = snapshotDoc.toString();
     setNotice('Saving…');
     try {
       const c = await mirrorFileContext();
@@ -460,8 +448,8 @@ export function mount(host) {
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
       state.path = normalized; state.version = r.version;
-      state.changed = false; state.text = area.value;
-      state.dirty = area.value !== snapshot;
+      state.changed = false; state.text = value();
+      editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
       hideSaveAs();
       setNotice(state.dirty ? 'Earlier revision saved; newer edits remain unsaved.'
         : 'Saved locally; syncing with server…');
@@ -500,7 +488,7 @@ export function mount(host) {
   }
   function hideSaveAs() {
     const wasOpen = !backdrop.hidden; backdrop.hidden = true;
-    if (wasOpen && !disposed) area.focus();
+    if (wasOpen && !disposed) focusEditor();
   }
   cancelSaveAs.addEventListener('click', () => { if (!busy) hideSaveAs(); });
   backdrop.addEventListener('click', event => { if (event.target === backdrop && !busy) hideSaveAs(); });
@@ -509,51 +497,44 @@ export function mount(host) {
     if (pathInput.value.trim()) save(pathInput.value, true);
   });
   function toggleWrap() {
-    // CM6-MIGRATION 5/8 — reconfigure a Compartment with EditorView.lineWrapping
-    // (or []) so changing wrap does not reset content, selection or undo history.
     state.wrap = !state.wrap;
-    area.wrap = state.wrap ? 'soft' : 'off';
+    editor?.setWrap(state.wrap);
     updateStatus();
   }
   function changeTextSize(step) {
     state.textSize = step === 0 ? 0 : Math.max(-2, Math.min(8, state.textSize + step));
     body.style.setProperty('--ce-text-step', state.textSize + 'px');
-    // CM6-MIGRATION: apply scoped editor theme/CSS then requestMeasure() if
-    // geometry changes. Text size is not a document mutation or browser zoom.
     updateStatus();
   }
   function openGoLine() {
-    findBar.hidden = true; lineBar.hidden = false;
-    const count = area.value.split('\n').length;
+    findBar.hidden = true; replaceBar.hidden = true; lineBar.hidden = false;
+    const count = value().split('\n').length;
     lineInput.max = String(count);
-    lineInput.value = String(area.value.slice(0, area.selectionStart).split('\n').length);
+    lineInput.value = String(value().slice(0, selection().from).split('\n').length);
     lineHint.textContent = `of ${count}`;
     lineInput.focus(); lineInput.select();
   }
   lineBar.addEventListener('submit', event => {
     event.preventDefault();
-    const target = Number(lineInput.value), lines = area.value.split('\n');
+    const target = Number(lineInput.value), lines = value().split('\n');
     if (!Number.isInteger(target) || target < 1 || target > lines.length) return;
     let offset = 0;
     for (let i = 0; i < target - 1; i++) offset += lines[i].length + 1;
     revealSelection(offset, offset);
     lineBar.hidden = true; scheduleInfo();
   });
-  lineClose.addEventListener('click', () => { lineBar.hidden = true; area.focus(); });
+  lineClose.addEventListener('click', () => { lineBar.hidden = true; focusEditor(); });
 
-  // CM6-MIGRATION 6/8 — replace this textarea-only literal search with the
-  // shared @codemirror/search support. Keep one set of commands and one visible
-  // find UI: don't mount a second CM search toolbar alongside this one.
-  // Use SearchQuery/search state, engine selections and scrollIntoView. Add
-  // replace as an undoable transaction, not string replacement on a second buffer.
+  // The application keeps one literal-search interface.
   let matches = [], currentMatch = -1;
   function openFind() {
     lineBar.hidden = true; findBar.hidden = false;
-    const selection = area.value.slice(area.selectionStart, area.selectionEnd);
-    if (selection && !selection.includes('\n') && selection.length <= 120) findInput.value = selection;
+    const selected = value().slice(selection().from, selection().to);
+    if (selected && !selected.includes('\n') && selected.length <= 120) findInput.value = selected;
     updateFindCount(); findInput.focus(); findInput.select();
   }
-  function closeFind() { findBar.hidden = true; area.focus(); }
+  function openReplace() { openFind(); replaceBar.hidden = false; }
+  function closeFind() { findBar.hidden = true; replaceBar.hidden = true; focusEditor(); }
   function renderFindCount() {
     findCount.textContent = !findInput.value ? '' : matches.length
       ? (currentMatch >= 0 ? `${currentMatch + 1} / ${matches.length}` : `${matches.length} found`)
@@ -563,38 +544,36 @@ export function mount(host) {
   function updateFindCount() {
     matches = []; currentMatch = -1;
     if (findInput.value) {
-      // Escape every regex metacharacter: this is literal search, NOT a regex UI.
-      // Match the original string so Unicode case conversion never shifts offsets.
-      const escaped = findInput.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(escaped, matchCase.getAttribute('aria-pressed') === 'true' ? 'gu' : 'giu');
-      for (const match of area.value.matchAll(pattern)) matches.push([match.index, match.index + match[0].length]);
+      matches = editor?.findAll(findInput.value, matchCase.getAttribute('aria-pressed') === 'true') || [];
     }
     renderFindCount();
   }
   function revealSelection(start, end) {
-    // Native textarea focus reveals a collapsed caret, but not necessarily a
-    // non-collapsed selection. Reveal the destination caret first, then select
-    // the requested range. This also works for F3 inside the already-focused
-    // editor. No cloned measuring surface or guessed wrapped-line geometry.
-    // CM6: dispatch {selection, scrollIntoView: true} instead.
-    area.blur(); area.setSelectionRange(start, start); area.focus();
-    area.setSelectionRange(start, end);
+    editor?.select(start, end); focusEditor();
   }
   function findDirection(direction) {
     if (!findInput.value) return;
     updateFindCount();
     if (!matches.length) return;
     if (direction > 0) {
-      currentMatch = matches.findIndex(([start]) => start >= area.selectionEnd);
+      currentMatch = matches.findIndex(([start]) => start >= selection().to);
       if (currentMatch < 0) currentMatch = 0;
     } else {
-      currentMatch = matches.findLastIndex(([start]) => start < area.selectionStart);
+      currentMatch = matches.findLastIndex(([start]) => start < selection().from);
       if (currentMatch < 0) currentMatch = matches.length - 1;
     }
     const [start, end] = matches[currentMatch];
     revealSelection(start, end);
     scheduleInfo(); renderFindCount();
   }
+  function replaceNext() {
+    updateFindCount(); if (!matches.length) return;
+    const selected = selection(); let range = matches.find(([from,to]) => from===selected.from && to===selected.to);
+    range ??= matches.find(([from]) => from >= selected.to) || matches[0];
+    editor.replace(range[0], range[1], replaceInput.value); updateFindCount();
+  }
+  replaceBar.addEventListener('submit', event => { event.preventDefault(); replaceNext(); });
+  replaceAllButton.addEventListener('click', () => { updateFindCount(); if (matches.length) { const ranges=matches.slice(); editor.replaceAll(ranges, replaceInput.value); updateFindCount(); } });
   findInput.addEventListener('input', updateFindCount);
   matchCase.addEventListener('click', () => {
     matchCase.setAttribute('aria-pressed', String(matchCase.getAttribute('aria-pressed') !== 'true'));
@@ -608,18 +587,13 @@ export function mount(host) {
     if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); findDirection(event.shiftKey ? -1 : 1); }
   });
 
-  // CM6-MIGRATION 7/8 — an EditorView.updateListener handles docChanged and
-  // selectionSet. Update dirty state/metrics there. Never synthesize textarea
-  // input events from CM, and never reset content on each state notification.
-  area.addEventListener('input', () => {
+  function onEdit() {
     editRevision++;
-    state.text = area.value;
-    state.dirty = true;
+    state.dirty = !editor.isClean();
     notice = ''; noticeKind = '';
     updateStatus();
     if (!findBar.hidden) updateFindCount();
-  });
-  for (const type of ['click', 'keyup', 'select']) area.addEventListener(type, scheduleInfo);
+  }
   body.addEventListener('keydown', event => {
     if (disposed || event.isComposing) return;
     const mod = event.ctrlKey || event.metaKey;
@@ -641,7 +615,7 @@ export function mount(host) {
     if (event.key === 'Escape') {
       if (activeMenu) { closeMenu(true); event.preventDefault(); }
       else if (!findBar.hidden) { closeFind(); event.preventDefault(); }
-      else if (!lineBar.hidden) { lineBar.hidden = true; area.focus(); event.preventDefault(); }
+      else if (!lineBar.hidden) { lineBar.hidden = true; focusEditor(); event.preventDefault(); }
       return;
     }
     if (event.key === 'F3' && !mod && !event.altKey) {
@@ -654,30 +628,27 @@ export function mount(host) {
       else if (key === 'f') id = 'find';
       if (id) { event.preventDefault(); closeMenu(); execute(id); }
     }
-    // Keep native textarea typing, IME, clipboard and undo/redo untouched.
-    // Tab/Shift+Tab move focus rather than trapping keyboard users. The previous
-    // setRangeText('    ') handler also bypassed native undo. CM6 can later add
-    // undoable indentation with an explicit, accessible keyboard escape policy.
+    // CodeMirror owns undo and editing; Tab remains available for focus navigation.
   });
 
-  updateStatus();
-  if (!state.loaded) {
-    area.disabled = true;
-    queueMicrotask(() => load());
-  } else if (!owner) {
-    area.disabled = true;
-    setNotice('Sign in to use your files.', 'warning');
-  }
+  setNotice('Loading editor…');
+  Promise.resolve().then(() => host.tools.loadCodeMirror()).then(module => {
+    if (disposed || host.signal.aborted || signedInSubject() !== owner) return;
+    editor = module.createEditor({parent:area,text:state.text,wrap:state.wrap,path:state.path,dirty:state.dirty,onChange:onEdit,onSelection:scheduleInfo});
+    host.ui.applyInputMode?.(area);
+    if (!owner) { editor.setReadOnly(true); setNotice('Sign in to use your files.', 'warning'); }
+    else if (!state.loaded) load();
+    else setNotice('');
+  }).catch(error => { if (!disposed) setNotice('Editor could not load: '+error.message, 'error'); });
   return {
     element: body,
     dispose() {
       if (disposed) return;
       disposed = true;
-      // CM6-MIGRATION 8/8 — call this instance's view.destroy(), release its
-      // listeners/extensions, and ignore late async module or file results.
-      // Do not tear down the shared module or another app's editor view.
       body.inert = true; closeMenu();
       layoutObserver.disconnect();
+      if (editor) state.text = editor.getText();
+      editor?.destroy(); editor = null;
       revision++;
       unsubscribe();
       clearTimeout(infoTimer);
@@ -695,6 +666,11 @@ const ICONS = {
   search: ['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z','m16.5 16.5 4.5 4.5'],
   wrap: ['M3 6h18','M3 10h18','M3 14h12a3 3 0 0 1 0 6h-4','m13 18-2 2 2 2','M3 18h5'],
   select: ['M6 3H3v3','M18 3h3v3','M3 18v3h3','M21 18v3h-3','M9 8h6','M12 8v8'],
+  undo: ['M9 7 4 12l5 5','M4 12h9a6 6 0 0 1 6 6'],
+  redo: ['m15 7 5 5-5 5','M20 12h-9a6 6 0 0 0-6 6'],
+  replace: ['M4 6h10','m11 3 3 3-3 3','M20 18H10','m13 15-3 3 3 3'],
+  indent: ['M4 5h16','M10 10h10','M10 15h10','M4 20h16','m4 10 4 3-4 3'],
+  outdent: ['M4 5h16','M10 10h10','M10 15h10','M4 20h16','m8 10-4 3 4 3'],
   more: ['M5 12h.01','M12 12h.01','M19 12h.01'],
   up: ['m6 14 6-6 6 6'],
   down: ['m6 10 6 6 6-6'],
@@ -745,9 +721,13 @@ const STYLES = `
 .ce-tool:hover:not(:disabled), .ce-iconbutton:hover:not(:disabled) { background: var(--ce-hover); }
 .ce-save-tool { background: var(--ce-primary); color: var(--ce-primary-fg) !important; }
 .ce-save-tool:hover:not(:disabled) { background: #174bb5; }
-.ce-editor { display: block; flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; resize: none; padding: 18px 23px; border: none; border-radius: 0; background: var(--ce-bg); color: var(--ce-fg); font: calc(14px + var(--ce-text-step, 0px))/1.6 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace !important; tab-size: 4; outline-offset: -3px; }
-.ce-editor:focus { outline: none; }
-.ce-findbar, .ce-linebar { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 7px 10px; border-bottom: 1px solid var(--ce-border); background: var(--ce-chrome); }
+.ce-editor { display: block; flex: 1 1 0; min-height: 0; min-width: 0; width: 100%; border: none; border-radius: 0; background: var(--ce-bg); color: var(--ce-fg); font: calc(14px + var(--ce-text-step, 0px))/1.6 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace !important; tab-size: 4; outline-offset: -3px; }
+.ce-editor .cm-content { padding: 18px 23px; }
+.ce-editor .cm-gutters { background: var(--ce-chrome); color: var(--ce-muted); border-color: var(--ce-border); }
+.ce-editor .cm-activeLine, .ce-editor .cm-activeLineGutter { background: color-mix(in srgb, var(--ce-hover) 55%, transparent); }
+.ce-editor .cm-cursor { border-left-color: var(--ce-fg); }
+.ce-editor .cm-editor.cm-focused { outline: none; }
+.ce-findbar, .ce-replacebar, .ce-linebar { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 7px 10px; border-bottom: 1px solid var(--ce-border); background: var(--ce-chrome); }
 .ce-find-input { min-width: 0; flex: 1; padding: 6px 9px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-bg); color: var(--ce-fg); }
 .ce-find-count { color: var(--ce-muted); min-width: 58px; text-align: center; font-size: 12px; }
 .ce-iconbutton { width: 32px; padding: 5px; }
@@ -788,14 +768,15 @@ const STYLES = `
   .ce-toolbar { display: flex; order: 2; min-height: 52px; justify-content: space-around; gap: 2px; padding: 5px 7px; border-top: 1px solid var(--ce-border); border-bottom: 0; }
   .ce-toolbar .ce-tool { min-width: 44px; min-height: 40px; }
   .ce-toolbar .ce-tool-label { display: none; }
-  .ce-findbar, .ce-linebar { order: 0; }
+  .ce-findbar, .ce-replacebar, .ce-linebar { order: 0; }
   .ce-findbar { padding: 5px 7px; gap: 2px; }
   .ce-findbar .ce-iconbutton { width: 36px; min-height: 40px; }
   .ce-find-count { min-width: 53px; font-size: 11px; }
   .ce-find-input, .ce-line-input, .ce-path-input { font-size: 16px !important; }
   .ce-editor { order: 1; }
   .ce-status { order: 3; }
-  .ce-editor { padding: 14px 15px; font-size: calc(16px + var(--ce-text-step, 0px)) !important; }
+  .ce-editor { font-size: calc(16px + var(--ce-text-step, 0px)) !important; }
+  .ce-editor .cm-content { padding: 14px 15px; }
   .ce-encoding, .ce-words { display: none; }
   .ce-status { min-height: 27px; }
   .ce-status-message[data-kind='error'], .ce-status-message[data-kind='warning'] { white-space: normal; overflow-wrap: anywhere; }

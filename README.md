@@ -8,12 +8,13 @@
 - `host.w`, including `launchContext`, `editor`, `title`, `ownerSub`;
 - `host.ui.make(tag, className)`;
 - `host.storage.mirrorFileContext()`, `signedInSubject()`, `pickFile(options)`;
+- `host.tools.loadCodeMirror()` and the shared per-view editor API;
 - `host.signal` for lifecycle cancellation/identity checks.
 
 The mirrored file context is still `{ valid(), path(), files }`, with
-`files.read`, `write`, `sync`, `subscribe`. No invented shared editor API,
-application manifest, framework, registry, new server endpoint or filesystem
-has been introduced.
+`files.read`, `write`, `sync`, `subscribe`. The shared CodeMirror tool exposes
+a small documented per-view editor API. There is no new server endpoint or
+filesystem.
 
 ## Document/file invariants
 
@@ -33,20 +34,22 @@ The inherited read limit is 2 MiB, with a NUL check in the first 1,024 bytes and
 strict UTF-8 decoding. This is a heuristic binary check, not a proof that every
 accepted file is text. These existing storage rules were not redesigned.
 
-`dispose()` is idempotent, unsubscribes, disconnects its ResizeObserver, removes
+`dispose()` is idempotent, destroys the CodeMirror view, unsubscribes, disconnects its ResizeObserver, removes
 the document listener, cancels its status timer, makes its detached UI inert and
 invalidates late UI updates. A write already accepted by storage is not canceled
 or claimed to have been rolled back.
 
 ## Current behavior and boundaries
 
-The textarea is the editing surface. `w.editor.text` remains its existing host
-snapshot. No custom undo manager or second engine exists. Native Ctrl/Cmd+Z,
-redo and clipboard operate in the text field; toolbar undo and programmatic
-replace are intentionally not added before engine history is available.
+A per-window CodeMirror 6 view is the editing surface and owns document state,
+selection and undo history. The shared tool is loaded lazily. `w.editor.text`
+is a host snapshot at file and disposal boundaries; there is no second editable
+surface. Undo/redo, literal replace and selection indentation use CodeMirror
+transactions. Clipboard and IME use the browser and editor normally.
 
 Word wrapping is initially enabled; the View menu can disable it for a wide
-line or log. It changes display only. Text-size controls affect the text area,
+line or log. It changes display only. Line numbers are shown; Python and
+JavaScript/TypeScript files use syntax highlighting. Text-size controls affect the text area,
 not browser zoom or saved content. Settings live in this window's editor state;
 there is no new global preference persistence mechanism.
 
