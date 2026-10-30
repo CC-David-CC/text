@@ -466,7 +466,7 @@ export function mount(host) {
     const beforePicker = editRevision;
     try {
       const selected = await host.storage.pickFile({
-        extensions: ['.txt', '.md', '.py', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf'],
+        extensions: ['.txt', '.md', '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.log'],
         signal: host.signal
       });
       if (!selected || !valid()) return;
