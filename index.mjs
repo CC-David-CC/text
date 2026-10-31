@@ -469,7 +469,8 @@ export function mount(host) {
   }
   async function openFile() {
     if (busy || !valid()) return;
-    if (state.dirty && !confirm('Discard unsaved changes and open another file?')) return;
+    if (state.dirty && !await host.ui.confirm('Discard unsaved changes and open another file?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
+    if (!valid()) return;
     const beforePicker = editRevision;
     try {
       const selected = await host.storage.pickFile({
@@ -479,12 +480,15 @@ export function mount(host) {
       if (!selected || !valid()) return;
       // A picker can remain open while the user keeps typing. Do not discard
       // edits made *after* the first confirmation without asking again.
-      if (editRevision !== beforePicker && !confirm('Discard edits made while the file picker was open?')) return;
+      if (editRevision !== beforePicker && !await host.ui.confirm('Discard edits made while the file picker was open?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
+      if (!valid()) return;
       await load({ target: selected });
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
   }
-  function reload() {
-    if (!state.dirty || confirm('Discard unsaved changes and reload?')) load({ checkServer: true });
+  async function reload() {
+    if (busy || !valid()) return;
+    if (state.dirty && !await host.ui.confirm('Discard unsaved changes and reload?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
+    if (valid()) await load({ checkServer: true });
   }
   function showSaveAs() {
     closeMenu();
