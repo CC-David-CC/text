@@ -85,3 +85,5 @@ This app does not add a window-level beforeunload handler for unrelated apps.
 The supplied original module implements the mirrored-file API. Its original
 README also mentioned other storage modes, but those implementations were not
 in the source. This module does not invent replacements for unseen variants.
+
+When a locally saved revision still has a server conflict, Text reports that it needs resolution in Files instead of claiming it is syncing. A conflict that arrives while a save is finishing is checked again after the operation.

@@ -396,7 +396,7 @@ export function mount(host) {
       // device cannot allocate it, the previous editor and path remain open.
       editor.replaceDocument(text, target);
       state.path = target; state.text = text; state.version = r.version;
-      state.loaded = true; state.dirty = false; state.changed = false;
+      state.loaded = true; state.dirty = false; state.changed = r.status === 'conflict';
       updateFindCount(); lineBar.hidden = true;
       setNotice(r.status === 'conflict' ? 'Conflicting file copies — resolve in Files.'
         : offline ? 'Loaded browser copy; server could not be reached.' : '',
@@ -417,7 +417,7 @@ export function mount(host) {
       if (!valid() || busy || state.path !== observedPath || state.version !== observedVersion) return;
       if (r.status === 'conflict') {
         state.changed = true;
-        setNotice('Conflicting file copies — resolve in Files.', 'warning');
+        setNotice(state.dirty ? 'Conflicting file copies — resolve in Files. Newer edits are unsaved.' : 'Conflicting file copies — resolve in Files.', 'warning');
       } else if (r.version !== observedVersion) {
         state.changed = true;
         setNotice('', '');
@@ -442,7 +442,7 @@ export function mount(host) {
     if (busy || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
-    busy = true;
+    busy = true; let savedContext = null;
     const snapshotDoc = editor.snapshot(), snapshot = snapshotDoc.toString();
     setNotice('Saving…');
     try {
@@ -453,17 +453,19 @@ export function mount(host) {
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
       state.path = normalized; state.version = r.version;
-      state.changed = false; state.text = value();
+      state.changed = r.status === 'conflict'; state.text = value();
       editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
       hideSaveAs();
-      setNotice(state.dirty ? 'Earlier revision saved; newer edits remain unsaved.'
-        : 'Saved locally; syncing with server…');
+      savedContext = c;
+      setNotice(state.changed ? (state.dirty ? 'Saved on this device; newer edits are unsaved. Resolve conflicting copies in Files.' : 'Saved on this device; conflicting copies need resolution in Files.')
+        : state.dirty ? 'Earlier revision saved; newer edits remain unsaved.'
+        : 'Saved locally; syncing with server…', state.changed ? 'warning' : '');
     } catch (error) {
       if (valid()) {
         setNotice(error.message, 'error');
         if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
       }
-    } finally { busy = false; if (!disposed) updateStatus(); }
+    } finally { busy = false; if (!disposed) updateStatus(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
   async function openFile() {
     if (busy || !valid()) return;
