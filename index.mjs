@@ -156,13 +156,16 @@ export function mount(host) {
   const pathInput = el('input', 'ce-path-input'); pathInput.type = 'text';
   pathInput.setAttribute('aria-label', 'Destination path');
   pathInput.autocomplete = 'off'; pathLabel.append(pathInput);
+  const browseFolder = btn('ce-browse-folder', 'Choose folder in My files');
+  browseFolder.textContent = 'Choose folder…';
+  browseFolder.hidden = typeof host.storage.pickFolder !== 'function';
   const dialogError = el('div', 'ce-dialog-error');
   dialogError.setAttribute('role', 'alert'); dialogError.hidden = true;
   const dialogActions = el('div', 'ce-dialog-actions');
   const cancelSaveAs = btn('ce-dialog-cancel', 'Cancel', 'Cancel'); cancelSaveAs.textContent = 'Cancel';
   const confirmSaveAs = el('button', 'ce-dialog-primary', 'Save copy'); confirmSaveAs.type = 'submit';
   dialogActions.append(cancelSaveAs, confirmSaveAs);
-  dialog.append(dialogTitle, pathLabel, dialogError, dialogActions); backdrop.append(dialog);
+  dialog.append(dialogTitle, pathLabel, browseFolder, dialogError, dialogActions); backdrop.append(dialog);
 
   // One command table serves menu, touch controls and keyboard shortcuts.
   // Editing commands operate on this window’s CodeMirror view.
@@ -270,7 +273,7 @@ export function mount(host) {
       else button.disabled = !enabled;
       if (id === 'wrap') button.setAttribute('aria-checked', String(state.wrap));
     }
-    confirmSaveAs.disabled = cancelSaveAs.disabled = pathInput.disabled = busy;
+    confirmSaveAs.disabled = cancelSaveAs.disabled = pathInput.disabled = browseFolder.disabled = busy;
     scheduleInfo();
   }
   function scheduleInfo() {
@@ -494,6 +497,22 @@ export function mount(host) {
     const wasOpen = !backdrop.hidden; backdrop.hidden = true;
     if (wasOpen && !disposed) focusEditor();
   }
+  browseFolder.addEventListener('click', async () => {
+    if (busy || !valid() || backdrop.hidden || typeof host.storage.pickFolder !== 'function') return;
+    browseFolder.disabled = true;
+    try {
+      const folder = await host.storage.pickFolder({signal: host.signal});
+      if (folder === null || !valid() || backdrop.hidden) return;
+      const c = await mirrorFileContext();
+      if (!valid() || !c.valid() || backdrop.hidden) return;
+      const name = pathInput.value.trim().split('/').filter(Boolean).pop() || fileName();
+      pathInput.value = c.path((folder === '/' ? '' : folder) + '/' + c.name(name));
+      dialogError.hidden = true;
+      pathInput.focus();
+    } catch (error) {
+      if (valid() && !backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
+    } finally { if (valid() && !backdrop.hidden) browseFolder.disabled = busy; }
+  });
   cancelSaveAs.addEventListener('click', () => { if (!busy) hideSaveAs(); });
   backdrop.addEventListener('click', event => { if (event.target === backdrop && !busy) hideSaveAs(); });
   dialog.addEventListener('submit', event => {
@@ -754,6 +773,7 @@ const STYLES = `
 .ce-path-input { padding: 9px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-bg); color: var(--ce-fg); }
 .ce-dialog-actions { display: flex; justify-content: end; gap: 8px; }
 .ce-dialog-actions button { padding: 8px 14px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-chrome); }
+.ce-browse-folder { align-self: flex-start; min-height: 44px; padding: 8px 14px; border: 1px solid var(--ce-border); border-radius: 6px; background: var(--ce-chrome); }
 .ce-dialog-actions .ce-dialog-primary { border-color: var(--ce-primary); background: var(--ce-primary); color: white; }
 .ce-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 @container (min-width: 521px) and (max-width: 700px) {

@@ -18,8 +18,8 @@ filesystem.
 
 ## Document/file invariants
 
-A new document asks for a path in My files on its first Save; an existing
-file at that path is not overwritten. Content is read from the authorized file
+A new document asks for a path in My files on its first Save. Choose folder
+opens the shared account folder picker; an existing file is not overwritten. Content is read from the authorized file
 service, not trusted launch-context contents. Ordinary Save uses the loaded version. Save As creates a different
 path with a null expected version; the actual service must reject an existing
 destination. A failed open or rejected save preserves the open text and file
