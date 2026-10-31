@@ -280,17 +280,17 @@ export function mount(host) {
     clearTimeout(infoTimer);
     infoTimer = setTimeout(() => {
       if (disposed || host.signal.aborted) return;
-      const text = value(), caret = selection().head;
-      let line = 1, last = -1;
-      for (let i = 0; i < caret; i++) if (text.charCodeAt(i) === 10) { line++; last = i; }
-      let count = 0, inWord = false;
+      if (!editor) return;
+      const info = editor.getInfo();
+      position.textContent = `Ln ${info.line}, Col ${info.column}`;
+      if (info.length > 2 * 1024 * 1024) { words.textContent = `${info.length} chars`; return; }
+      const text = value(); let count = 0, inWord = false;
       for (let i = 0; i < text.length; i++) {
         const isSpace = /\s/.test(text[i]);
         if (!isSpace && !inWord) count++;
         inWord = !isSpace;
       }
-      position.textContent = `Ln ${line}, Col ${caret - last}`;
-      words.textContent = `${count} words · ${text.length} chars`;
+      words.textContent = `${count} words · ${info.length} chars`;
     }, 100);
   }
 
@@ -389,13 +389,14 @@ export function mount(host) {
       if (checkServer) try { await c.files.sync(); } catch { offline = true; }
       const r = await c.files.read(target);
       if (!valid() || token !== revision) return;
-      if (r.data.length > 2 * 1024 * 1024 || r.data.slice(0, 1024).includes(0))
-        throw Error('This file cannot be opened as text.');
+      if (r.data.length > 128 * 1024 * 1024) throw Error('Text files are limited to 128 MiB.');
+      if (r.data.subarray(0, 1024).includes(0)) throw Error('This file cannot be opened as text.');
       const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
+      // Create the replacement before switching the saved file identity; if a
+      // device cannot allocate it, the previous editor and path remain open.
+      editor.replaceDocument(text, target);
       state.path = target; state.text = text; state.version = r.version;
       state.loaded = true; state.dirty = false; state.changed = false;
-      // Replacing a document creates fresh editor history.
-      editor.replaceDocument(text, target);
       updateFindCount(); lineBar.hidden = true;
       setNotice(r.status === 'conflict' ? 'Conflicting file copies — resolve in Files.'
         : offline ? 'Loaded browser copy; server could not be reached.' : '',
@@ -412,7 +413,7 @@ export function mount(host) {
     if (!valid() || busy || !state.loaded || !state.version) return;
     const observedPath = state.path, observedVersion = state.version;
     try {
-      const r = await c.files.read(observedPath);
+      const r = await (typeof c.files.stat === 'function' ? c.files.stat(observedPath) : c.files.read(observedPath));
       if (!valid() || busy || state.path !== observedPath || state.version !== observedVersion) return;
       if (r.status === 'conflict') {
         state.changed = true;
@@ -531,18 +532,17 @@ export function mount(host) {
   }
   function openGoLine() {
     findBar.hidden = true; replaceBar.hidden = true; lineBar.hidden = false;
-    const count = value().split('\n').length;
+    const info = editor.getInfo(), count = info.lines;
     lineInput.max = String(count);
-    lineInput.value = String(value().slice(0, selection().from).split('\n').length);
+    lineInput.value = String(info.line);
     lineHint.textContent = `of ${count}`;
     lineInput.focus(); lineInput.select();
   }
   lineBar.addEventListener('submit', event => {
     event.preventDefault();
-    const target = Number(lineInput.value), lines = value().split('\n');
-    if (!Number.isInteger(target) || target < 1 || target > lines.length) return;
-    let offset = 0;
-    for (let i = 0; i < target - 1; i++) offset += lines[i].length + 1;
+    const target = Number(lineInput.value), count = editor.getInfo().lines;
+    if (!Number.isInteger(target) || target < 1 || target > count) return;
+    const offset = editor.lineOffset(target);
     revealSelection(offset, offset);
     lineBar.hidden = true; scheduleInfo();
   });
@@ -552,13 +552,15 @@ export function mount(host) {
   let matches = [], currentMatch = -1;
   function openFind() {
     lineBar.hidden = true; findBar.hidden = false;
-    const selected = value().slice(selection().from, selection().to);
-    if (selected && !selected.includes('\n') && selected.length <= 120) findInput.value = selected;
+    const range = selection(), selected = range.to - range.from <= 120 ? editor.selectedText() : '';
+    if (selected && !selected.includes('\n')) findInput.value = selected;
     updateFindCount(); findInput.focus(); findInput.select();
   }
   function openReplace() { openFind(); replaceBar.hidden = false; }
   function closeFind() { findBar.hidden = true; replaceBar.hidden = true; focusEditor(); }
   function renderFindCount() {
+    replaceAllButton.disabled = !!matches.truncated;
+    if (matches.truncated) { findCount.textContent = '50,000+ matches; narrow your search.'; findPrev.disabled = findNext.disabled = false; return; }
     findCount.textContent = !findInput.value ? '' : matches.length
       ? (currentMatch >= 0 ? `${currentMatch + 1} / ${matches.length}` : `${matches.length} found`)
       : 'No results';
@@ -596,7 +598,7 @@ export function mount(host) {
     editor.replace(range[0], range[1], replaceInput.value); updateFindCount();
   }
   replaceBar.addEventListener('submit', event => { event.preventDefault(); replaceNext(); });
-  replaceAllButton.addEventListener('click', () => { updateFindCount(); if (matches.length) { const ranges=matches.slice(); editor.replaceAll(ranges, replaceInput.value); updateFindCount(); } });
+  replaceAllButton.addEventListener('click', () => { updateFindCount(); if (matches.length && !matches.truncated) { const ranges=matches.slice(); editor.replaceAll(ranges, replaceInput.value); updateFindCount(); } });
   findInput.addEventListener('input', updateFindCount);
   matchCase.addEventListener('click', () => {
     matchCase.setAttribute('aria-pressed', String(matchCase.getAttribute('aria-pressed') !== 'true'));

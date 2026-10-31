@@ -31,9 +31,11 @@ Typing may continue during an ordinary save. The saved snapshot and the live
 buffer are compared on completion; newer edits remain dirty. Successful writes
 are reported as locally saved and syncing, NOT as server-confirmed completion.
 
-The inherited read limit is 2 MiB, with a NUL check in the first 1,024 bytes and
-strict UTF-8 decoding. This is a heuristic binary check, not a proof that every
-accepted file is text. These existing storage rules were not redesigned.
+Text files up to the shared 128 MiB limit can be opened, with a NUL check in the
+first 1,024 bytes and strict UTF-8 decoding. This is a heuristic binary check,
+not a proof that every accepted file is text. Very large files need substantial
+browser memory and may be slow, especially on phones or with long lines. Word
+counts are omitted above 2,097,152 UTF-16 code units to avoid rescanning on every edit.
 
 `dispose()` is idempotent, destroys the CodeMirror view, unsubscribes, disconnects its ResizeObserver, removes
 the document listener, cancels its status timer, makes its detached UI inert and
@@ -55,7 +57,9 @@ not browser zoom or saved content. Settings live in this window's editor state;
 there is no new global preference persistence mechanism.
 
 Find is literal, uses JavaScript Unicode case-insensitive matching unless Match
-case is selected, and reports non-overlapping matches. It is not locale-aware
+case is selected, and reports non-overlapping matches. Search stores at most 50,000 matches; if
+there are more, narrow the search. Replace all is disabled until the result
+fits that limit so it cannot silently replace only part of the document. It is not locale-aware
 collation, full-document highlight decoration or a regular-expression UI.
 Selection/caret offsets and character counts use JavaScript UTF-16 code units;
 word counts are whitespace-delimited, not linguistic analysis.
