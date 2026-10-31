@@ -152,7 +152,7 @@ export function mount(host) {
   dialog.setAttribute('aria-modal', 'true');
   dialog.setAttribute('aria-labelledby', instanceId + '-save-title');
   const dialogTitle = el('h2', '', 'Save a copy'); dialogTitle.id = instanceId + '-save-title';
-  const pathLabel = el('label', '', 'Destination path');
+  const pathLabel = el('label', '', 'Path in My files');
   const pathInput = el('input', 'ce-path-input'); pathInput.type = 'text';
   pathInput.setAttribute('aria-label', 'Destination path');
   pathInput.autocomplete = 'off'; pathLabel.append(pathInput);
@@ -437,6 +437,7 @@ export function mount(host) {
   async function save(target = state.path, asCopy = false) {
     if (busy || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
+    if (!asCopy && state.version === null) { showSaveAs(); return; }
     busy = true;
     const snapshotDoc = editor.snapshot(), snapshot = snapshotDoc.toString();
     setNotice('Saving…');
@@ -444,7 +445,7 @@ export function mount(host) {
       const c = await mirrorFileContext();
       if (!valid() || !c.valid()) return;
       const normalized = c.path(target);
-      if (asCopy && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
+      if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
       state.path = normalized; state.version = r.version;
@@ -481,6 +482,9 @@ export function mount(host) {
   }
   function showSaveAs() {
     closeMenu();
+    const firstSave = state.version === null;
+    dialogTitle.textContent = firstSave ? 'Save to My files' : 'Save a copy';
+    confirmSaveAs.textContent = firstSave ? 'Save' : 'Save copy';
     pathInput.value = state.path;
     dialogError.hidden = true;
     backdrop.hidden = false;
