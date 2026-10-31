@@ -51,8 +51,7 @@ surface. Undo/redo, literal replace and selection indentation use CodeMirror
 transactions. Clipboard and IME use the browser and editor normally.
 
 Word wrapping is initially enabled; the View menu can disable it for a wide
-line or log. It changes display only. Line numbers are shown; Python and
-JavaScript/TypeScript files use syntax highlighting. Text-size controls affect the text area,
+line or log. It changes display only. Line numbers are shown; Python, JavaScript/TypeScript, C/C++ and Arduino `.ino` files use syntax highlighting. The Open chooser includes C/C++ source and headers and `.ino` sketches; Files can also open them directly. Text-size controls affect the text area,
 not browser zoom or saved content. Settings live in this window's editor state;
 there is no new global preference persistence mechanism.
 

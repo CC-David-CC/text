@@ -452,7 +452,7 @@ export function mount(host) {
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
-      state.path = normalized; state.version = r.version;
+      state.path = normalized; state.version = r.version; editor.setPath?.(normalized);
       state.changed = r.status === 'conflict'; state.text = value();
       editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
       hideSaveAs();
@@ -473,7 +473,7 @@ export function mount(host) {
     const beforePicker = editRevision;
     try {
       const selected = await host.storage.pickFile({
-        extensions: ['.txt', '.md', '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.log'],
+        extensions: ['.txt', '.md', '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx', '.ino', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.log'],
         signal: host.signal
       });
       if (!selected || !valid()) return;
