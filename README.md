@@ -58,8 +58,9 @@ there is no new global preference persistence mechanism.
 
 Find is literal, uses JavaScript Unicode case-insensitive matching unless Match
 case is selected, and reports non-overlapping matches. Search stores at most 50,000 matches; if
-there are more, narrow the search. Replace all is disabled until the result
-fits that limit so it cannot silently replace only part of the document. It is not locale-aware
+there are more, Find next, Find previous and Replace still navigate the full
+document. Replace all is disabled until the search is narrowed so it cannot
+silently replace only part of the document. It is not locale-aware
 collation, full-document highlight decoration or a regular-expression UI.
 Selection/caret offsets and character counts use JavaScript UTF-16 code units;
 word counts are whitespace-delimited, not linguistic analysis.

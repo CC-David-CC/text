@@ -580,6 +580,11 @@ export function mount(host) {
     if (!findInput.value) return;
     updateFindCount();
     if (!matches.length) return;
+    if (matches.truncated) {
+      const selected = selection(), range = editor.findFrom(findInput.value, matchCase.getAttribute('aria-pressed') === 'true', direction > 0 ? selected.to : selected.from, direction);
+      if (range) { revealSelection(range[0], range[1]); scheduleInfo(); }
+      return;
+    }
     if (direction > 0) {
       currentMatch = matches.findIndex(([start]) => start >= selection().to);
       if (currentMatch < 0) currentMatch = 0;
@@ -593,8 +598,10 @@ export function mount(host) {
   }
   function replaceNext() {
     updateFindCount(); if (!matches.length) return;
-    const selected = selection(); let range = matches.find(([from,to]) => from===selected.from && to===selected.to);
-    range ??= matches.find(([from]) => from >= selected.to) || matches[0];
+    const selected = selection(); let range;
+    if (matches.truncated) range = editor.selectionMatches(findInput.value, matchCase.getAttribute('aria-pressed') === 'true') ? [selected.from, selected.to] : editor.findFrom(findInput.value, matchCase.getAttribute('aria-pressed') === 'true', selected.to, 1);
+    else { range = matches.find(([from,to]) => from===selected.from && to===selected.to); range ??= matches.find(([from]) => from >= selected.to) || matches[0]; }
+    if (!range) return;
     editor.replace(range[0], range[1], replaceInput.value); updateFindCount();
   }
   replaceBar.addEventListener('submit', event => { event.preventDefault(); replaceNext(); });
