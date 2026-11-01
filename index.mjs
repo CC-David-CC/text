@@ -501,7 +501,7 @@ export function mount(host) {
         if (!accepted || !valid()) return;
         if (editRevision !== before) { setNotice('Text changed while confirming. Nothing was saved.', 'warning'); return; }
       }
-      const snapshotDoc = editor.snapshot(), snapshot = (state.hasUTF8BOM ? '\ufeff' : '') + snapshotDoc.toString().replace(/\n/g, state.lineEnding);
+      const snapshotDoc = editor.snapshot(), text = snapshotDoc.toString(), snapshot = (state.hasUTF8BOM ? '\ufeff' : '') + (state.lineEnding === '\n' ? text : text.replace(/\n/g, state.lineEnding));
       setNotice('Saving…');
       const c = await mirrorFileContext();
       if (!valid() || !c.valid()) return;

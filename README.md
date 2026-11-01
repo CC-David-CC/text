@@ -46,8 +46,10 @@ bytes and reopened the file in a fresh browser session. Physical touch is not
 verified by those tests. Sync confirmation reflects the mirror's latest known
 state; another device may change the file afterward.
 
-Text files up to the shared 128 MiB limit can be opened, with a NUL check in the
-first 1,024 bytes and strict UTF-8 decoding. This is a heuristic binary check,
+Text accepts files up to the shared 128 MiB storage limit, with a NUL check in the
+first 1,024 bytes and strict UTF-8 decoding. Acceptance is not a guarantee that
+a device can open or edit a file of that size; browser memory and responsiveness
+vary with the device and the file. This is a heuristic binary check,
 not a proof that every accepted file is text. Very large files need substantial
 browser memory and may be slow, especially on phones or with long lines. Word
 counts are omitted above 2,097,152 UTF-16 code units to avoid rescanning on every edit.
@@ -153,3 +155,10 @@ picker still require confirmation before opening the selected file. Local
 registered-account desktop and emulated-phone tests cover blocked concurrent
 file actions, draft preservation, server sync and reopen. Physical touch has
 not been verified by these tests.
+
+An isolated registered-account test used Files to upload an approximately 8 MiB
+LF text file, edited and saved it, compared server content and reopened it in a
+fresh browser session at desktop and emulated-phone sizes. Saving LF files now
+skips an unnecessary whole-document newline replacement; CRLF and CR preservation
+and mixed-line-ending confirmations passed separately. These checks do not test
+128 MiB files, physical phones, peak memory or a guaranteed size on any device.
