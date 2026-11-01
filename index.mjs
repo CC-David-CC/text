@@ -64,7 +64,7 @@ export function mount(host) {
   const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
-  let busy = false, replacing = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
   let notice = '', noticeKind = '', activeMenu = null, menuTrigger = null;
 
   // Main window contents. The title bar itself continues to be owned by CodiServer.
@@ -459,7 +459,7 @@ export function mount(host) {
     if (busy || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
-    busy = true; let savedContext = null;
+    busy = true; writePending = true; state.dirty = true; let savedContext = null;
     updateStatus();
     try {
       if (state.mixedLineEndings) {
@@ -489,7 +489,7 @@ export function mount(host) {
         setNotice(error.message, 'error');
         if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
       }
-    } finally { busy = false; if (!disposed) updateStatus(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
+    } finally { writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
   async function confirmDiscard(message) {
     const before = editRevision;
@@ -663,7 +663,7 @@ export function mount(host) {
 
   function onEdit() {
     editRevision++;
-    state.dirty = !editor.isClean();
+    state.dirty = writePending || !editor.isClean();
     notice = ''; noticeKind = '';
     updateStatus();
     if (!findBar.hidden) updateFindCount();

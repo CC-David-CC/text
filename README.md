@@ -105,3 +105,8 @@ Cancel to keep the open text and original file unchanged.
 If a file opened directly cannot be decoded as supported text, Text keeps the
 error visible and starts a new editable note. Its first save asks for a new
 path; the original file and its contents are left untouched.
+
+The window asks before closing while a save is in progress, including a clean
+note being saved as a copy. A failed or cancelled save restores the previous
+clean state unless the text changed. A write already sent to storage can still
+finish after the window closes.
