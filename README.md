@@ -30,6 +30,11 @@ either discard confirmation is open, the editor keeps the current text and
 asks the user to start the open or reload action again. Only one such action
 can be in progress per editor window.
 
+A temporary failure to check a file reports it as unavailable. If a later
+check finds the same saved version without a conflict, that temporary warning
+clears. A confirmed change or conflict remains flagged until the user reloads
+or saves a copy; a metadata check cannot prove the server has synchronized.
+
 Typing may continue during an ordinary save. The saved snapshot and the live
 buffer are compared on completion; newer edits remain dirty. Successful writes
 are reported as locally saved and syncing, NOT as server-confirmed completion.

@@ -65,6 +65,10 @@ export function mount(host) {
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
   let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  // A failed metadata check is not evidence that the saved file changed.
+  // Remember whether that failure alone raised the warning so a later
+  // successful check can clear it without hiding a real conflict or change.
+  let unavailableWithoutChange = false;
   let notice = '', noticeKind = '', activeMenu = null, menuTrigger = null;
 
   // Main window contents. The title bar itself continues to be owned by CodiServer.
@@ -405,7 +409,7 @@ export function mount(host) {
       state.lineEnding = mixed ? '\n' : firstEnding || '\n'; state.mixedLineEndings = mixed;
       state.hasUTF8BOM = r.data.length >= 3 && r.data[0] === 0xef && r.data[1] === 0xbb && r.data[2] === 0xbf;
       state.path = target; state.text = text; state.version = r.version;
-      state.loaded = true; state.dirty = false; state.changed = r.status === 'conflict';
+      state.loaded = true; state.dirty = false; state.changed = r.status === 'conflict'; unavailableWithoutChange = false;
       updateFindCount(); lineBar.hidden = true;
       setNotice(r.status === 'conflict' ? 'Conflicting file copies — resolve in Files.'
         : offline ? 'Loaded browser copy; server could not be reached.' : '',
@@ -435,14 +439,19 @@ export function mount(host) {
       const r = await (typeof c.files.stat === 'function' ? c.files.stat(observedPath) : c.files.read(observedPath));
       if (!valid() || !c.valid() || busy || check !== fileCheckRevision || state.path !== observedPath || state.version !== observedVersion) return;
       if (r.status === 'conflict') {
-        state.changed = true;
+        unavailableWithoutChange = false; state.changed = true;
         setNotice(state.dirty ? 'Conflicting file copies — resolve in Files. Newer edits are unsaved.' : 'Conflicting file copies — resolve in Files.', 'warning');
       } else if (r.version !== observedVersion) {
-        state.changed = true;
+        unavailableWithoutChange = false; state.changed = true;
         setNotice('', '');
+      } else if (unavailableWithoutChange) {
+        unavailableWithoutChange = false; state.changed = false;
+        if (notice === 'Saved file unavailable. Your open text is unchanged.') setNotice('', '');
+        else updateStatus();
       }
     } catch {
       if (valid() && c.valid() && !busy && check === fileCheckRevision && state.path === observedPath && state.version === observedVersion) {
+        if (!state.changed) unavailableWithoutChange = true;
         state.changed = true;
         setNotice('Saved file unavailable. Your open text is unchanged.', 'warning');
       }
@@ -479,7 +488,7 @@ export function mount(host) {
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
       state.path = normalized; state.version = r.version; state.mixedLineEndings = false; editor.setPath?.(normalized);
-      state.changed = r.status === 'conflict'; state.text = value();
+      state.changed = r.status === 'conflict'; unavailableWithoutChange = false; state.text = value();
       editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
       hideSaveAs();
       savedContext = c;
