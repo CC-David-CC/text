@@ -124,3 +124,8 @@ newer check or report a false unavailability after a successful save. Local
 desktop and emulated-phone account tests cover a delayed metadata failure,
 continued editing and server sync. Existing checks also cover a changed source,
 saving a copy and reopening. Physical touch remains unverified.
+
+The Save dialog keeps a folder choice tied to the dialog that requested it.
+Save waits for that choice to finish. Closing and reopening the dialog ignores
+late choices, and editing the path while choosing a folder preserves the edited
+path instead of silently changing it.

@@ -65,6 +65,7 @@ export function mount(host) {
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
   let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let saveDialogEpoch = 0, folderChoice = null;
   // A failed metadata check is not evidence that the saved file changed.
   // Remember whether that failure alone raised the warning so a later
   // successful check can clear it without hiding a real conflict or change.
@@ -539,6 +540,7 @@ export function mount(host) {
   }
   function showSaveAs() {
     closeMenu();
+    saveDialogEpoch++;
     const firstSave = state.version === null;
     dialogTitle.textContent = firstSave ? 'Save to My files' : 'Save a copy';
     confirmSaveAs.textContent = firstSave ? 'Save' : 'Save copy';
@@ -549,28 +551,33 @@ export function mount(host) {
   }
   function hideSaveAs() {
     const wasOpen = !backdrop.hidden; backdrop.hidden = true;
+    if (wasOpen) { saveDialogEpoch++; folderChoice = null; browseFolder.disabled = busy; }
     if (wasOpen && !disposed) focusEditor();
   }
   browseFolder.addEventListener('click', async () => {
-    if (busy || !valid() || backdrop.hidden || typeof host.storage.pickFolder !== 'function') return;
+    if (busy || folderChoice || !valid() || backdrop.hidden || typeof host.storage.pickFolder !== 'function') return;
+    const choice = { epoch: saveDialogEpoch, path: pathInput.value };
+    folderChoice = choice;
     browseFolder.disabled = true;
     try {
       const folder = await host.storage.pickFolder({signal: host.signal});
-      if (folder === null || !valid() || backdrop.hidden) return;
+      if (folder === null || !valid() || backdrop.hidden || choice.epoch !== saveDialogEpoch) return;
       const c = await mirrorFileContext();
-      if (!valid() || !c.valid() || backdrop.hidden) return;
+      if (!valid() || !c.valid() || backdrop.hidden || choice.epoch !== saveDialogEpoch) return;
+      if (pathInput.value !== choice.path) { dialogError.textContent = 'The file path changed while choosing a folder. Choose again.'; dialogError.hidden = false; return; }
       const name = pathInput.value.trim().split('/').filter(Boolean).pop() || fileName();
       pathInput.value = c.path((folder === '/' ? '' : folder) + '/' + c.name(name));
       dialogError.hidden = true;
       pathInput.focus();
     } catch (error) {
-      if (valid() && !backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
-    } finally { if (valid() && !backdrop.hidden) browseFolder.disabled = busy; }
+      if (valid() && !backdrop.hidden && choice.epoch === saveDialogEpoch) { dialogError.textContent = error.message; dialogError.hidden = false; }
+    } finally { if (folderChoice === choice) { folderChoice = null; if (valid()) browseFolder.disabled = busy; } }
   });
   cancelSaveAs.addEventListener('click', () => { if (!busy) hideSaveAs(); });
   backdrop.addEventListener('click', event => { if (event.target === backdrop && !busy) hideSaveAs(); });
   dialog.addEventListener('submit', event => {
     event.preventDefault();
+    if (folderChoice) { dialogError.textContent = 'Finish choosing a folder before saving.'; dialogError.hidden = false; return; }
     if (pathInput.value.trim()) save(pathInput.value, true);
   });
   function toggleWrap() {
