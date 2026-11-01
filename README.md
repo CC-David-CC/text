@@ -36,8 +36,15 @@ clears. A confirmed change or conflict remains flagged until the user reloads
 or saves a copy; a metadata check cannot prove the server has synchronized.
 
 Typing may continue during an ordinary save. The saved snapshot and the live
-buffer are compared on completion; newer edits remain dirty. Successful writes
-are reported as locally saved and syncing, NOT as server-confirmed completion.
+buffer are compared on completion; newer edits remain dirty. A successful local
+write first reports that it is syncing. The message changes to “Saved and synced”
+only when the account mirror reports that exact version synced, and only if no
+newer edit, conflict, or other warning has replaced the pending-save message.
+Local desktop and emulated-phone registered-account tests delayed a metadata
+check, edited while it was pending, then saved again, checked actual server
+bytes and reopened the file in a fresh browser session. Physical touch is not
+verified by those tests. Sync confirmation reflects the mirror's latest known
+state; another device may change the file afterward.
 
 Text files up to the shared 128 MiB limit can be opened, with a NUL check in the
 first 1,024 bytes and strict UTF-8 decoding. This is a heuristic binary check,

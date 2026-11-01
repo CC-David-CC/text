@@ -467,6 +467,10 @@ export function mount(host) {
         if (notice === 'Saved file unavailable. Your open text is unchanged.') setNotice('', '');
         else updateStatus();
       }
+      // A successful local write is not yet a server save. Only promote the
+      // status when the mirror reports this exact version synced and no later
+      // edit or warning has replaced the pending-save message.
+      if (r.status === 'synced' && !state.changed && !state.dirty && notice === 'Saved locally; syncing with server…') setNotice('Saved and synced.', '');
     } catch {
       if (valid() && c.valid() && !busy && check === fileCheckRevision && state.path === observedPath && state.version === observedVersion) {
         if (!state.changed) unavailableWithoutChange = true;
