@@ -61,7 +61,7 @@ export function mount(host) {
   const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
-  let busy = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let busy = false, replacing = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
   let notice = '', noticeKind = '', activeMenu = null, menuTrigger = null;
 
   // Main window contents. The title bar itself continues to be owned by CodiServer.
@@ -467,12 +467,20 @@ export function mount(host) {
       }
     } finally { busy = false; if (!disposed) updateStatus(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
+  async function confirmDiscard(message) {
+    const before = editRevision;
+    const accepted = await host.ui.confirm(message, {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal});
+    if (!accepted || !valid()) return false;
+    if (editRevision !== before) { setNotice('Text changed while confirming. Nothing was discarded.', 'warning'); return false; }
+    return true;
+  }
   async function openFile() {
-    if (busy || !valid()) return;
-    if (state.dirty && !await host.ui.confirm('Discard unsaved changes and open another file?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
-    if (!valid()) return;
-    const beforePicker = editRevision;
+    if (busy || replacing || !valid()) return;
+    replacing = true;
     try {
+      if (state.dirty && !await confirmDiscard('Discard unsaved changes and open another file?')) return;
+      if (!valid()) return;
+      const beforePicker = editRevision;
       const selected = await host.storage.pickFile({
         extensions: ['.txt', '.md', '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx', '.ino', '.sh', '.csv', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.log'],
         signal: host.signal
@@ -480,15 +488,19 @@ export function mount(host) {
       if (!selected || !valid()) return;
       // A picker can remain open while the user keeps typing. Do not discard
       // edits made *after* the first confirmation without asking again.
-      if (editRevision !== beforePicker && !await host.ui.confirm('Discard edits made while the file picker was open?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
+      if (editRevision !== beforePicker && !await confirmDiscard('Discard edits made while the file picker was open?')) return;
       if (!valid()) return;
       await load({ target: selected });
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
+    finally { replacing = false; }
   }
   async function reload() {
-    if (busy || !valid()) return;
-    if (state.dirty && !await host.ui.confirm('Discard unsaved changes and reload?', {title:'Unsaved changes',confirmLabel:'Discard changes',cancelLabel:'Keep editing',danger:true,signal:host.signal})) return;
-    if (valid()) await load({ checkServer: true });
+    if (busy || replacing || !valid()) return;
+    replacing = true;
+    try {
+      if (state.dirty && !await confirmDiscard('Discard unsaved changes and reload?')) return;
+      if (valid()) await load({ checkServer: true });
+    } finally { replacing = false; }
   }
   function showSaveAs() {
     closeMenu();

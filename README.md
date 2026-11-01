@@ -25,7 +25,10 @@ path with a null expected version; the actual service must reject an existing
 destination. A failed open or rejected save preserves the open text and file
 identity. External changes are reported, not silently loaded over a draft.
 Reload confirms before discarding edits. Edits made while a picker is open
-require a second confirmation before replacement.
+require a second confirmation before replacement. If an edit arrives while
+either discard confirmation is open, the editor keeps the current text and
+asks the user to start the open or reload action again. Only one such action
+can be in progress per editor window.
 
 Typing may continue during an ordinary save. The saved snapshot and the live
 buffer are compared on completion; newer edits remain dirty. Successful writes
