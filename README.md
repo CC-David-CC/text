@@ -113,3 +113,9 @@ finish after the window closes.
 
 After an open or reload finishes, Text rechecks the loaded file metadata so
 changes detected during the read are reported without replacing the open text.
+
+File-status checks are ordered: an older delayed result cannot overwrite a
+newer check or report a false unavailability after a successful save. Local
+desktop and emulated-phone account tests cover a delayed metadata failure,
+continued editing and server sync. Existing checks also cover a changed source,
+saving a copy and reopening. Physical touch remains unverified.

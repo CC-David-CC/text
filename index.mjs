@@ -64,7 +64,7 @@ export function mount(host) {
   const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
-  let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
   let notice = '', noticeKind = '', activeMenu = null, menuTrigger = null;
 
   // Main window contents. The title bar itself continues to be owned by CodiServer.
@@ -384,7 +384,7 @@ export function mount(host) {
 
   async function load({ target = state.path, checkServer = false } = {}) {
     if (busy || !valid()) return;
-    busy = true; editor?.setReadOnly(true); setNotice('Opening file…');
+    busy = true; fileCheckRevision++; editor?.setReadOnly(true); setNotice('Opening file…');
     const token = ++revision; let loadContext = null;
     try {
       const c = await mirrorFileContext();
@@ -430,10 +430,10 @@ export function mount(host) {
   }
   async function observe(c) {
     if (!valid() || busy || !state.loaded || !state.version) return;
-    const observedPath = state.path, observedVersion = state.version;
+    const observedPath = state.path, observedVersion = state.version, check = ++fileCheckRevision;
     try {
       const r = await (typeof c.files.stat === 'function' ? c.files.stat(observedPath) : c.files.read(observedPath));
-      if (!valid() || busy || state.path !== observedPath || state.version !== observedVersion) return;
+      if (!valid() || !c.valid() || busy || check !== fileCheckRevision || state.path !== observedPath || state.version !== observedVersion) return;
       if (r.status === 'conflict') {
         state.changed = true;
         setNotice(state.dirty ? 'Conflicting file copies — resolve in Files. Newer edits are unsaved.' : 'Conflicting file copies — resolve in Files.', 'warning');
@@ -442,7 +442,7 @@ export function mount(host) {
         setNotice('', '');
       }
     } catch {
-      if (valid() && !busy && state.path === observedPath) {
+      if (valid() && c.valid() && !busy && check === fileCheckRevision && state.path === observedPath && state.version === observedVersion) {
         state.changed = true;
         setNotice('Saved file unavailable. Your open text is unchanged.', 'warning');
       }
@@ -461,7 +461,7 @@ export function mount(host) {
     if (busy || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
-    busy = true; writePending = true; state.dirty = true; let savedContext = null;
+    busy = true; fileCheckRevision++; writePending = true; state.dirty = true; let savedContext = null;
     updateStatus();
     try {
       if (state.mixedLineEndings) {
@@ -725,7 +725,7 @@ export function mount(host) {
       layoutObserver.disconnect();
       if (editor) state.text = editor.getText();
       editor?.destroy(); editor = null;
-      revision++;
+      revision++; fileCheckRevision++;
       unsubscribe();
       clearTimeout(infoTimer);
       document.removeEventListener('pointerdown', outsideMenu, true);
