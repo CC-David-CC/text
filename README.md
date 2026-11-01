@@ -139,3 +139,10 @@ original reference and offers Reload. Desktop and emulated-phone tests use
 simulated cache misses and sync failures, and separately open, edit and sync a
 roughly 3 MiB file. They do not establish performance at the 128 MiB limit or
 on a physical phone.
+
+Open and Reload serialize file commands while their confirmation or file picker
+is pending. The editor remains available for typing; changes made during a
+picker still require confirmation before opening the selected file. Local
+registered-account desktop and emulated-phone tests cover blocked concurrent
+file actions, draft preservation, server sync and reopen. Physical touch has
+not been verified by these tests.

@@ -208,7 +208,7 @@ export function mount(host) {
     const cmd = commands[id];
     return !!cmd && !disposed && !host.signal.aborted && !busy
       && !!editor && (state.loaded || id === 'open' || (id === 'reload' && !!w.launchContext?.path))
-      && (!cmd.file || !!owner)
+      && (!cmd.file || (!!owner && !replacing))
       && !(id === 'reload' && state.version == null && (state.loaded || !w.launchContext?.path))
       && !(id === 'textLarger' && state.textSize >= 8)
       && !(id === 'textSmaller' && state.textSize <= -2);
@@ -485,7 +485,7 @@ export function mount(host) {
   });
 
   async function save(target = state.path, asCopy = false) {
-    if (busy || !valid()) return;
+    if (busy || replacing || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
     busy = true; fileCheckRevision++; writePending = true; state.dirty = true; let savedContext = null;
@@ -529,7 +529,7 @@ export function mount(host) {
   }
   async function openFile() {
     if (busy || replacing || !valid()) return;
-    replacing = true;
+    replacing = true; updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and open another file?')) return;
       if (!valid()) return;
@@ -545,17 +545,18 @@ export function mount(host) {
       if (!valid()) return;
       await load({ target: selected });
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
-    finally { replacing = false; }
+    finally { replacing = false; if (valid()) updateStatus(); }
   }
   async function reload() {
     if (busy || replacing || !valid()) return;
-    replacing = true;
+    replacing = true; updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and reload?')) return;
       if (valid()) await load({ checkServer: true });
-    } finally { replacing = false; }
+    } finally { replacing = false; if (valid()) updateStatus(); }
   }
   function showSaveAs() {
+    if (busy || replacing || !valid()) return;
     closeMenu();
     saveDialogEpoch++;
     const firstSave = state.version === null;
