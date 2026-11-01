@@ -101,3 +101,7 @@ Files with consistently LF, CRLF, or CR line endings retain that style when
 saved, including when saved as a copy. A UTF-8 byte-order mark is preserved. Files with mixed line endings show a
 warning, and saving or saving a copy asks before normalizing them to LF.
 Cancel to keep the open text and original file unchanged.
+
+If a file opened directly cannot be decoded as supported text, Text keeps the
+error visible and starts a new editable note. Its first save asks for a new
+path; the original file and its contents are left untouched.

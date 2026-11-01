@@ -410,7 +410,16 @@ export function mount(host) {
         : offline ? 'Loaded browser copy; server could not be reached.' : '',
         r.status === 'conflict' ? 'warning' : '');
     } catch (error) {
-      if (valid()) setNotice(error.message, 'error');
+      if (valid()) {
+        if (!state.loaded) {
+          editor.replaceDocument('', '/Untitled.txt');
+          state.path = '/Untitled.txt'; state.text = ''; state.version = null;
+          state.loaded = true; state.dirty = false; state.changed = false;
+          state.lineEnding = '\n'; state.mixedLineEndings = false; state.hasUTF8BOM = false;
+          w.launchContext = null;
+          setNotice(error.message + ' A new blank note is ready.', 'error');
+        } else setNotice(error.message, 'error');
+      }
     } finally {
       busy = false;
       if (valid()) editor?.setReadOnly(!state.loaded);
