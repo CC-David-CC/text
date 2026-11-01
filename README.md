@@ -129,3 +129,8 @@ The Save dialog keeps a folder choice tied to the dialog that requested it.
 Save waits for that choice to finish. Closing and reopening the dialog ignores
 late choices, and editing the path while choosing a folder preserves the edited
 path instead of silently changing it.
+
+If a restored file is temporarily unavailable, Text retains its file reference
+and keeps the editor read-only. Use Reload to retry or Open to choose another
+file. A confirmed missing or invalid text file instead opens a blank note; the
+original file is not changed.

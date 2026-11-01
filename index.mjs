@@ -207,9 +207,9 @@ export function mount(host) {
   function commandEnabled(id) {
     const cmd = commands[id];
     return !!cmd && !disposed && !host.signal.aborted && !busy
-      && !!editor && (state.loaded || id === 'open')
+      && !!editor && (state.loaded || id === 'open' || (id === 'reload' && !!w.launchContext?.path))
       && (!cmd.file || !!owner)
-      && !(id === 'reload' && state.version == null)
+      && !(id === 'reload' && state.version == null && (state.loaded || !w.launchContext?.path))
       && !(id === 'textLarger' && state.textSize >= 8)
       && !(id === 'textSmaller' && state.textSize <= -2);
   }
@@ -390,18 +390,25 @@ export function mount(host) {
   async function load({ target = state.path, checkServer = false } = {}) {
     if (busy || !valid()) return;
     busy = true; fileCheckRevision++; editor?.setReadOnly(true); setNotice('Opening file…');
-    const token = ++revision; let loadContext = null;
+    const token = ++revision; let loadContext = null, broken = false;
     try {
       const c = await mirrorFileContext();
-      if (!valid() || !c.valid()) return;
+      if (!valid()) return;
+      if (!c.valid()) throw Error('File storage is unavailable.');
       loadContext = c;
       let offline = false;
       if (checkServer) try { await c.files.sync(); } catch { offline = true; }
-      const r = await c.files.read(target);
-      if (!valid() || !c.valid() || token !== revision) return;
-      if (r.data.length > 128 * 1024 * 1024) throw Error('Text files are limited to 128 MiB.');
-      if (r.data.subarray(0, 1024).includes(0)) throw Error('This file cannot be opened as text.');
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
+      let r;
+      try { r = await c.files.read(target); }
+      catch (error) { if (error?.message === 'File not found.' && c.valid()) broken = true; throw error; }
+      if (!valid() || token !== revision) return;
+      if (!c.valid()) throw Error('File storage is unavailable.');
+      let text;
+      try {
+        if (r.data.length > 128 * 1024 * 1024) throw Error('Text files are limited to 128 MiB.');
+        if (r.data.subarray(0, 1024).includes(0)) throw Error('This file cannot be opened as text.');
+        text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
+      } catch (error) { broken = c.valid(); throw error; }
       // Create the replacement before switching the saved file identity; if a
       // device cannot allocate it, the previous editor and path remain open.
       const endings = /\r\n|\r|\n/g; let firstEnding = null, mixed = false, ending;
@@ -417,14 +424,15 @@ export function mount(host) {
         r.status === 'conflict' ? 'warning' : '');
     } catch (error) {
       if (valid()) {
-        if (!state.loaded) {
+        if (!state.loaded && broken && loadContext?.valid()) {
           editor.replaceDocument('', '/Untitled.txt');
           state.path = '/Untitled.txt'; state.text = ''; state.version = null;
           state.loaded = true; state.dirty = false; state.changed = false;
           state.lineEnding = '\n'; state.mixedLineEndings = false; state.hasUTF8BOM = false;
           w.launchContext = null;
           setNotice(error.message + ' A new blank note is ready.', 'error');
-        } else setNotice(error.message, 'error');
+        } else if (!state.loaded) setNotice(error.message + ' Use Reload to try again, or open another file.', 'error');
+        else setNotice(error.message, 'error');
       }
     } finally {
       busy = false;
