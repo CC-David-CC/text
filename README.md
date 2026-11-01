@@ -89,3 +89,10 @@ README also mentioned other storage modes, but those implementations were not
 in the source. This module does not invent replacements for unseen variants.
 
 When a locally saved revision still has a server conflict, Text reports that it needs resolution in Files instead of claiming it is syncing. A conflict that arrives while a save is finishing is checked again after the operation.
+
+Text loads the shared CodeMirror tool through the desktop host. Install its
+pinned packages with `npm ci --prefix apps/system/codemirror --ignore-scripts`.
+The standard app builder automatically includes the `codemirror` bundle when
+Text is selected, including `--apps text` builds. Custom source/entry overlays
+must include their own required host-loaded tools. JupyterLite supplies its own
+independent CodeMirror integration.
