@@ -385,14 +385,15 @@ export function mount(host) {
   async function load({ target = state.path, checkServer = false } = {}) {
     if (busy || !valid()) return;
     busy = true; editor?.setReadOnly(true); setNotice('Opening file…');
-    const token = ++revision;
+    const token = ++revision; let loadContext = null;
     try {
       const c = await mirrorFileContext();
       if (!valid() || !c.valid()) return;
+      loadContext = c;
       let offline = false;
       if (checkServer) try { await c.files.sync(); } catch { offline = true; }
       const r = await c.files.read(target);
-      if (!valid() || token !== revision) return;
+      if (!valid() || !c.valid() || token !== revision) return;
       if (r.data.length > 128 * 1024 * 1024) throw Error('Text files are limited to 128 MiB.');
       if (r.data.subarray(0, 1024).includes(0)) throw Error('This file cannot be opened as text.');
       const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
@@ -424,6 +425,7 @@ export function mount(host) {
       busy = false;
       if (valid()) editor?.setReadOnly(!state.loaded);
       if (!disposed) updateStatus();
+      if (valid() && loadContext?.valid()) void observe(loadContext);
     }
   }
   async function observe(c) {

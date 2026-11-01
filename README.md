@@ -110,3 +110,6 @@ The window asks before closing while a save is in progress, including a clean
 note being saved as a copy. A failed or cancelled save restores the previous
 clean state unless the text changed. A write already sent to storage can still
 finish after the window closes.
+
+After an open or reload finishes, Text rechecks the loaded file metadata so
+changes detected during the read are reported without replacing the open text.
