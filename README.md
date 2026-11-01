@@ -96,3 +96,8 @@ The standard app builder automatically includes the `codemirror` bundle when
 Text is selected, including `--apps text` builds. Custom source/entry overlays
 must include their own required host-loaded tools. JupyterLite supplies its own
 independent CodeMirror integration.
+
+Files with consistently LF, CRLF, or CR line endings retain that style when
+saved, including when saved as a copy. A UTF-8 byte-order mark is preserved. Files with mixed line endings show a
+warning, and saving or saving a copy asks before normalizing them to LF.
+Cancel to keep the open text and original file unchanged.

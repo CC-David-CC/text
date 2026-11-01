@@ -19,6 +19,9 @@ export function mount(host) {
     version: null, loaded: !launch, dirty: false, changed: false, wrap: true
   };
   state.wrap ??= true; // New documents wrap; an explicit user toggle is respected.
+  state.lineEnding ??= '\n';
+  state.mixedLineEndings ??= false;
+  state.hasUTF8BOM ??= false;
   state.textSize ??= 0; // Relative steps: the phone keeps its larger base size.
   if (owner) w.ownerSub = owner;
 
@@ -260,10 +263,11 @@ export function mount(host) {
     if (disposed) return;
     const defaultMessage = state.changed
       ? 'File changed outside editor — reload or resolve in Files.'
+      : state.mixedLineEndings ? 'Mixed line endings will be converted to LF when saved.'
       : state.dirty ? 'Unsaved changes' : busy ? 'Working…' : 'Ready';
     statusMessage.textContent = notice || defaultMessage;
     statusMessage.title = statusMessage.textContent;
-    statusMessage.dataset.kind = noticeKind || (state.changed ? 'warning' : '');
+    statusMessage.dataset.kind = noticeKind || (state.changed || state.mixedLineEndings ? 'warning' : '');
     updateTitle();
     for (const button of body.querySelectorAll('[data-command]')) {
       const id = button.dataset.command;
@@ -394,7 +398,11 @@ export function mount(host) {
       const text = new TextDecoder('utf-8', { fatal: true }).decode(r.data);
       // Create the replacement before switching the saved file identity; if a
       // device cannot allocate it, the previous editor and path remain open.
+      const endings = /\r\n|\r|\n/g; let firstEnding = null, mixed = false, ending;
+      while ((ending = endings.exec(text))) { if (firstEnding === null) firstEnding = ending[0]; else if (firstEnding !== ending[0]) { mixed = true; break; } }
       editor.replaceDocument(text, target);
+      state.lineEnding = mixed ? '\n' : firstEnding || '\n'; state.mixedLineEndings = mixed;
+      state.hasUTF8BOM = r.data.length >= 3 && r.data[0] === 0xef && r.data[1] === 0xbb && r.data[2] === 0xbf;
       state.path = target; state.text = text; state.version = r.version;
       state.loaded = true; state.dirty = false; state.changed = r.status === 'conflict';
       updateFindCount(); lineBar.hidden = true;
@@ -443,16 +451,23 @@ export function mount(host) {
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
     busy = true; let savedContext = null;
-    const snapshotDoc = editor.snapshot(), snapshot = snapshotDoc.toString();
-    setNotice('Saving…');
+    updateStatus();
     try {
+      if (state.mixedLineEndings) {
+        const before = editRevision;
+        const accepted = await host.ui.confirm('This file has mixed line endings. Saving will convert them to LF. Continue?', {title:'Mixed line endings',confirmLabel:'Save with LF',cancelLabel:'Keep editing',signal:host.signal});
+        if (!accepted || !valid()) return;
+        if (editRevision !== before) { setNotice('Text changed while confirming. Nothing was saved.', 'warning'); return; }
+      }
+      const snapshotDoc = editor.snapshot(), snapshot = (state.hasUTF8BOM ? '\ufeff' : '') + snapshotDoc.toString().replace(/\n/g, state.lineEnding);
+      setNotice('Saving…');
       const c = await mirrorFileContext();
       if (!valid() || !c.valid()) return;
       const normalized = c.path(target);
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
-      state.path = normalized; state.version = r.version; editor.setPath?.(normalized);
+      state.path = normalized; state.version = r.version; state.mixedLineEndings = false; editor.setPath?.(normalized);
       state.changed = r.status === 'conflict'; state.text = value();
       editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
       hideSaveAs();
