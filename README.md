@@ -133,4 +133,9 @@ path instead of silently changing it.
 If a restored file is temporarily unavailable, Text retains its file reference
 and keeps the editor read-only. Use Reload to retry or Open to choose another
 file. A confirmed missing or invalid text file instead opens a blank note; the
-original file is not changed.
+original file is not changed. When a browser copy is missing, Text first
+checks server synchronization; if it cannot check the server it keeps the
+original reference and offers Reload. Desktop and emulated-phone tests use
+simulated cache misses and sync failures, and separately open, edit and sync a
+roughly 3 MiB file. They do not establish performance at the 128 MiB limit or
+on a physical phone.

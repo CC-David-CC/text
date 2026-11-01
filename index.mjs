@@ -396,11 +396,20 @@ export function mount(host) {
       if (!valid()) return;
       if (!c.valid()) throw Error('File storage is unavailable.');
       loadContext = c;
-      let offline = false;
-      if (checkServer) try { await c.files.sync(); } catch { offline = true; }
+      let offline = false, synced = false;
+      if (checkServer) try { await c.files.sync(); synced = true; } catch { offline = true; }
       let r;
       try { r = await c.files.read(target); }
-      catch (error) { if (error?.message === 'File not found.' && c.valid()) broken = true; throw error; }
+      catch (error) {
+        if (error?.message !== 'File not found.' || !c.valid()) throw error;
+        // A missing browser copy is not proof that the server copy is gone.
+        // Only clear the restore path after a successful server sync.
+        if (!synced && !offline) try { await c.files.sync(); synced = true; } catch { offline = true; }
+        if (offline) throw Error('The file is not available on this device and the server could not be checked.');
+        if (!valid() || !c.valid() || token !== revision) return;
+        try { r = await c.files.read(target); }
+        catch (retryError) { if (retryError?.message === 'File not found.' && c.valid()) broken = true; throw retryError; }
+      }
       if (!valid() || token !== revision) return;
       if (!c.valid()) throw Error('File storage is unavailable.');
       let text;
