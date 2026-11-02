@@ -64,7 +64,7 @@ export function mount(host) {
   const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
   let disposed = false;
   const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
-  let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
+  let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, commandRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
   let saveDialogEpoch = 0, folderChoice = null;
   // A failed metadata check is not evidence that the saved file changed.
   // Remember whether that failure alone raised the warning so a later
@@ -422,7 +422,7 @@ export function mount(host) {
       // device cannot allocate it, the previous editor and path remain open.
       const endings = /\r\n|\r|\n/g; let firstEnding = null, mixed = false, ending;
       while ((ending = endings.exec(text))) { if (firstEnding === null) firstEnding = ending[0]; else if (firstEnding !== ending[0]) { mixed = true; break; } }
-      editor.replaceDocument(text, target);
+      editor.replaceDocument(text, target); commandRevision++;
       state.lineEnding = mixed ? '\n' : firstEnding || '\n'; state.mixedLineEndings = mixed;
       state.hasUTF8BOM = r.data.length >= 3 && r.data[0] === 0xef && r.data[1] === 0xbb && r.data[2] === 0xbf;
       state.path = target; state.text = text; state.version = r.version;
@@ -434,7 +434,7 @@ export function mount(host) {
     } catch (error) {
       if (valid()) {
         if (!state.loaded && broken && loadContext?.valid()) {
-          editor.replaceDocument('', '/Untitled.txt');
+          editor.replaceDocument('', '/Untitled.txt'); commandRevision++;
           state.path = '/Untitled.txt'; state.text = ''; state.version = null;
           state.loaded = true; state.dirty = false; state.changed = false;
           state.lineEnding = '\n'; state.mixedLineEndings = false; state.hasUTF8BOM = false;
@@ -509,6 +509,7 @@ export function mount(host) {
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid()) return;
+      if (state.path !== normalized) commandRevision++;
       state.path = normalized; state.version = r.version; state.mixedLineEndings = false; editor.setPath?.(normalized);
       state.changed = r.status === 'conflict'; unavailableWithoutChange = false; state.text = value();
       editor.markSaved(snapshotDoc); state.dirty = !editor.isClean();
@@ -701,7 +702,7 @@ export function mount(host) {
   });
 
   function onEdit() {
-    editRevision++;
+    editRevision++; commandRevision++;
     state.dirty = writePending || !editor.isClean();
     notice = ''; noticeKind = '';
     updateStatus();
@@ -743,6 +744,25 @@ export function mount(host) {
     }
     // CodeMirror owns undo and editing; Tab remains available for focus navigation.
   });
+
+  if (host.commands) {
+    const ready = () => { if (!valid() || !editor || !state.loaded || busy || replacing || !backdrop.hidden) throw Error('The document is not ready for commands.'); };
+    const inspect = host.commands.register({id:'inspect',description:'Read a bounded slice of this open text document.',parameters:{type:'object',properties:{start:{type:'integer',minimum:0},length:{type:'integer',minimum:0,maximum:65536}}}},args => {
+      ready(); if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(k => !['start','length'].includes(k))) throw Error('Provide optional start and length.');
+      const text=value(), start=args.start??0, length=args.length??4096;
+      if (!Number.isSafeInteger(start) || start<0 || start>text.length || !Number.isSafeInteger(length) || length<0 || length>65536) throw Error('Invalid text range.');
+      const end=Math.min(text.length,start+length), boundary=pos => pos>0 && pos<text.length && /[\uD800-\uDBFF]/.test(text[pos-1]) && /[\uDC00-\uDFFF]/.test(text[pos]);
+      if (boundary(start) || boundary(end)) throw Error('Text range splits a Unicode character.');
+      return {path:state.path,revision:commandRevision,dirty:state.dirty,length:text.length,start,text:text.slice(start,end)};
+    }); host.onDispose(inspect);
+    const replace = host.commands.register({id:'replace-range',description:'Replace a UTF-16 range in the open document using its inspected revision.',parameters:{type:'object',required:['from','to','text','revision'],properties:{from:{type:'integer',minimum:0},to:{type:'integer',minimum:0},text:{type:'string',maxLength:4096},revision:{type:'integer',minimum:0}}}},args => {
+      ready(); if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(k => !['from','to','text','revision'].includes(k)) || !Number.isSafeInteger(args.from) || !Number.isSafeInteger(args.to) || !Number.isSafeInteger(args.revision) || typeof args.text !== 'string' || args.text.length>4096) throw Error('Provide from, to, text and the inspected revision.');
+      const text=value(), boundary=pos => pos>0 && pos<text.length && /[\uD800-\uDBFF]/.test(text[pos-1]) && /[\uDC00-\uDFFF]/.test(text[pos]);
+      if (args.revision!==commandRevision) throw Error('The document changed. Inspect it again.');
+      if (args.from<0 || args.to<args.from || args.to>text.length || boundary(args.from) || boundary(args.to) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(args.text)) throw Error('Invalid UTF-16 text range or input.');
+      editor.replace(args.from,args.to,args.text); return {path:state.path,revision:commandRevision,dirty:state.dirty,length:value().length};
+    }); host.onDispose(replace);
+  }
 
   setNotice('Loading editor…');
   Promise.resolve().then(() => host.tools.loadCodeMirror()).then(module => {
