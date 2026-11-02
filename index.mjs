@@ -1,3 +1,4 @@
+import {createTextLifecycle} from './lifecycle.mjs';
 /** CodiServer Text v0.2.0 — compact UI, unchanged mount(host) file contract.
  * Desktop: File / Edit / View | Reload / Find | document name / Save.
  * Phone: the approved document header + Open / Save / Find bottom bar.
@@ -62,8 +63,8 @@ export function mount(host) {
     return svg;
   };
   const fileName = () => state.path.split('/').filter(Boolean).pop() || 'Untitled.txt';
-  let disposed = false;
-  const valid = () => !disposed && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
+  let disposed = false, quiesced = false, priorInert = false;
+  const valid = () => !disposed && !quiesced && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
   let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, commandRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
   let saveDialogEpoch = 0, folderChoice = null;
   // A failed metadata check is not evidence that the saved file changed.
@@ -155,6 +156,11 @@ export function mount(host) {
   // Save As is explicitly distinct from Save. The former uses null expected
   // version to create a destination; the server must reject existing files.
   const backdrop = el('div', 'ce-dialog-backdrop'); backdrop.hidden = true;
+  const lifecycle = createTextLifecycle({
+    readState: () => ({dirty:!!state.dirty,pending:busy||replacing||!!folderChoice||!backdrop.hidden||!editor||!state.loaded,quiesced}),
+    pause: () => {priorInert=body.inert;quiesced=true;body.inert=true;try{editor?.setReadOnly(true);}catch(error){quiesced=false;body.inert=priorInert;throw error;}},
+    resume: () => {quiesced=false;body.inert=priorInert;editor?.setReadOnly(!state.loaded||!owner);}
+  });
   const dialog = el('form', 'ce-dialog');
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-modal', 'true');
@@ -206,7 +212,7 @@ export function mount(host) {
   ];
   function commandEnabled(id) {
     const cmd = commands[id];
-    return !!cmd && !disposed && !host.signal.aborted && !busy
+    return !!cmd && !disposed && !quiesced && !host.signal.aborted && !busy
       && !!editor && (state.loaded || id === 'open' || (id === 'reload' && !!w.launchContext?.path))
       && (!cmd.file || (!!owner && !replacing))
       && !(id === 'reload' && state.version == null && (state.loaded || !w.launchContext?.path))
@@ -389,7 +395,7 @@ export function mount(host) {
 
   async function load({ target = state.path, checkServer = false } = {}) {
     if (busy || !valid()) return;
-    busy = true; fileCheckRevision++; editor?.setReadOnly(true); setNotice('Opening file…');
+    busy = true; fileCheckRevision++; editor?.setReadOnly(true); setNotice('Opening file…'); lifecycle.changed();
     const token = ++revision; let loadContext = null, broken = false;
     try {
       const c = await mirrorFileContext();
@@ -444,7 +450,7 @@ export function mount(host) {
         else setNotice(error.message, 'error');
       }
     } finally {
-      busy = false;
+      busy = false; lifecycle.changed();
       if (valid()) editor?.setReadOnly(!state.loaded);
       if (!disposed) updateStatus();
       if (valid() && loadContext?.valid()) void observe(loadContext);
@@ -492,7 +498,7 @@ export function mount(host) {
     if (busy || replacing || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
-    busy = true; fileCheckRevision++; writePending = true; state.dirty = true; let savedContext = null;
+    busy = true; fileCheckRevision++; writePending = true; state.dirty = true; lifecycle.changed(); let savedContext = null;
     updateStatus();
     try {
       if (state.mixedLineEndings) {
@@ -525,7 +531,7 @@ export function mount(host) {
         if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
       }
       if (command) throw error;
-    } finally { writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
+    } finally { writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } lifecycle.changed(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
   async function confirmDiscard(message) {
     const before = editRevision;
@@ -536,7 +542,7 @@ export function mount(host) {
   }
   async function openFile() {
     if (busy || replacing || !valid()) return;
-    replacing = true; updateStatus();
+    replacing = true; lifecycle.changed(); updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and open another file?')) return;
       if (!valid()) return;
@@ -551,15 +557,15 @@ export function mount(host) {
       if (!valid()) return;
       await load({ target: selected });
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
-    finally { replacing = false; if (valid()) updateStatus(); }
+    finally { replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
   }
   async function reload() {
     if (busy || replacing || !valid()) return;
-    replacing = true; updateStatus();
+    replacing = true; lifecycle.changed(); updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and reload?')) return;
       if (valid()) await load({ checkServer: true });
-    } finally { replacing = false; if (valid()) updateStatus(); }
+    } finally { replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
   }
   function showSaveAs() {
     if (busy || replacing || !valid()) return;
@@ -570,18 +576,18 @@ export function mount(host) {
     confirmSaveAs.textContent = firstSave ? 'Save' : 'Save copy';
     pathInput.value = state.path;
     dialogError.hidden = true;
-    backdrop.hidden = false;
+    backdrop.hidden = false; lifecycle.changed();
     pathInput.focus(); pathInput.select();
   }
   function hideSaveAs() {
     const wasOpen = !backdrop.hidden; backdrop.hidden = true;
-    if (wasOpen) { saveDialogEpoch++; folderChoice = null; browseFolder.disabled = busy; }
+    if (wasOpen) { saveDialogEpoch++; folderChoice = null; browseFolder.disabled = busy; lifecycle.changed(); }
     if (wasOpen && !disposed) focusEditor();
   }
   browseFolder.addEventListener('click', async () => {
     if (busy || folderChoice || !valid() || backdrop.hidden || typeof host.storage.pickFolder !== 'function') return;
     const choice = { epoch: saveDialogEpoch, path: pathInput.value };
-    folderChoice = choice;
+    folderChoice = choice; lifecycle.changed();
     browseFolder.disabled = true;
     try {
       const folder = await host.storage.pickFolder({signal: host.signal});
@@ -595,7 +601,7 @@ export function mount(host) {
       pathInput.focus();
     } catch (error) {
       if (valid() && !backdrop.hidden && choice.epoch === saveDialogEpoch) { dialogError.textContent = error.message; dialogError.hidden = false; }
-    } finally { if (folderChoice === choice) { folderChoice = null; if (valid()) browseFolder.disabled = busy; } }
+    } finally { if (folderChoice === choice) { folderChoice = null; lifecycle.changed(); if (valid()) browseFolder.disabled = busy; } }
   });
   cancelSaveAs.addEventListener('click', () => { if (!busy) hideSaveAs(); });
   backdrop.addEventListener('click', event => { if (event.target === backdrop && !busy) hideSaveAs(); });
@@ -705,7 +711,7 @@ export function mount(host) {
 
   function onEdit() {
     editRevision++; commandRevision++;
-    state.dirty = writePending || !editor.isClean();
+    state.dirty = writePending || !editor.isClean(); lifecycle.changed();
     notice = ''; noticeKind = '';
     updateStatus();
     if (!findBar.hidden) updateFindCount();
@@ -782,16 +788,17 @@ export function mount(host) {
   Promise.resolve().then(() => host.tools.loadCodeMirror()).then(module => {
     if (disposed || host.signal.aborted || signedInSubject() !== owner) return;
     editor = module.createEditor({parent:area,text:state.text,wrap:state.wrap,path:state.path,dirty:state.dirty,onChange:onEdit,onSelection:scheduleInfo});
-    host.ui.applyInputMode?.(area);
+    lifecycle.changed(); host.ui.applyInputMode?.(area);
     if (!owner) { editor.setReadOnly(true); setNotice('Sign in to use your files.', 'warning'); }
     else if (!state.loaded) load();
     else setNotice('');
   }).catch(error => { if (!disposed) setNotice('Editor could not load: '+error.message, 'error'); });
   return {
     element: body,
+    lifecycle: Object.freeze({snapshot:lifecycle.snapshot,subscribe:lifecycle.subscribe,quiesce:lifecycle.quiesce}),
     dispose() {
       if (disposed) return;
-      disposed = true;
+      disposed = true; lifecycle.close();
       body.inert = true; closeMenu();
       layoutObserver.disconnect();
       if (editor) state.text = editor.getText();
