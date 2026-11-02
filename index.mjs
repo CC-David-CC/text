@@ -488,7 +488,7 @@ export function mount(host) {
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
   });
 
-  async function save(target = state.path, asCopy = false) {
+  async function save(target = state.path, asCopy = false, command = false) {
     if (busy || replacing || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
@@ -504,7 +504,7 @@ export function mount(host) {
       const snapshotDoc = editor.snapshot(), text = snapshotDoc.toString(), snapshot = (state.hasUTF8BOM ? '\ufeff' : '') + (state.lineEnding === '\n' ? text : text.replace(/\n/g, state.lineEnding));
       setNotice('Saving…');
       const c = await mirrorFileContext();
-      if (!valid() || !c.valid()) return;
+      if (!valid() || !c.valid()) { if (command) throw Error('The document session ended before saving.'); return; }
       const normalized = c.path(target);
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
@@ -518,11 +518,13 @@ export function mount(host) {
       setNotice(state.changed ? (state.dirty ? 'Saved on this device; newer edits are unsaved. Resolve conflicting copies in Files.' : 'Saved on this device; conflicting copies need resolution in Files.')
         : state.dirty ? 'Earlier revision saved; newer edits remain unsaved.'
         : 'Saved locally; syncing with server…', state.changed ? 'warning' : '');
+      return {path:normalized, status:r.status, dirty:state.dirty, revision:commandRevision};
     } catch (error) {
       if (valid()) {
         setNotice(error.message, 'error');
         if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
       }
+      if (command) throw error;
     } finally { writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
   async function confirmDiscard(message) {
@@ -762,6 +764,18 @@ export function mount(host) {
       if (args.from<0 || args.to<args.from || args.to>text.length || boundary(args.from) || boundary(args.to) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(args.text)) throw Error('Invalid UTF-16 text range or input.');
       editor.replace(args.from,args.to,args.text); return {path:state.path,revision:commandRevision,dirty:state.dirty,length:value().length};
     }); host.onDispose(replace);
+    const saveCommand = host.commands.register({id:'save',description:'Save the inspected revision to My files. Supply a new path only for an untitled document.',parameters:{type:'object',required:['revision'],properties:{revision:{type:'integer',minimum:0},path:{type:'string',maxLength:1024}},additionalProperties:false}},async args => {
+      ready();
+      if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(k => !['revision','path'].includes(k)) || !Number.isSafeInteger(args.revision) || args.revision !== commandRevision) throw Error('Inspect the current document revision before saving.');
+      if (state.mixedLineEndings) throw Error('Use the Save button to confirm conversion of mixed line endings.');
+      const isNew = state.version === null;
+      if (isNew && (typeof args.path !== 'string' || !args.path.trim() || args.path.length > 1024)) throw Error('Provide a new My files path for this document.');
+      if (!isNew && args.path !== undefined) throw Error('A saved document can only be saved to its current path.');
+      const savedRevision = commandRevision;
+      const result = await save(isNew ? args.path : state.path, isNew, true);
+      if (!result) throw Error('The document could not be saved.');
+      return {...result, savedRevision};
+    }); host.onDispose(saveCommand);
   }
 
   setNotice('Loading editor…');

@@ -162,3 +162,11 @@ fresh browser session at desktop and emulated-phone sizes. Saving LF files now
 skips an unnecessary whole-document newline replacement; CRLF and CR preservation
 and mixed-line-ending confirmations passed separately. These checks do not test
 128 MiB files, physical phones, peak memory or a guaranteed size on any device.
+
+The in-page browser command API also provides `save` after `inspect` or
+`replace-range`. Supply the current revision; for an untitled document also
+supply a new My files path. Existing files retain their current path and version
+checks, and a new path cannot overwrite an existing file. The result reports a
+local pending or conflict status rather than claiming server synchronization.
+If the editor has mixed line endings, save through the visible interface so the
+conversion can be confirmed. These commands do not expose a remote agent API.
