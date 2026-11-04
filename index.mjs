@@ -13,6 +13,8 @@ export function mount(host) {
   const { w } = host;
   const { make } = host.ui;
   const { mirrorFileContext, signedInSubject } = host.storage;
+  const operations = host.documentOperations;
+  if (!operations) throw Error('Document operation service is required.');
   const launch = w.launchContext;
   const owner = launch?.owner || signedInSubject();
   const state = w.editor ??= {
@@ -66,7 +68,9 @@ export function mount(host) {
   let disposed = false, quiesced = false, priorInert = false;
   const valid = () => !disposed && !quiesced && !host.signal.aborted && body.isConnected && signedInSubject() === owner;
   let busy = false, writePending = false, replacing = false, revision = 0, editRevision = 0, commandRevision = 0, fileCheckRevision = 0, unsubscribe = () => {}, infoTimer = null;
-  let saveDialogEpoch = 0, folderChoice = null;
+  let saveDialogEpoch = 0, folderChoice = null, saveDialogToken = null;
+  if (launch?.storage === 'mirror' && launch.path) operations.setDocument('mirror:' + launch.path);
+  else if (state.version && state.path) operations.setDocument('mirror:' + state.path);
   // A failed metadata check is not evidence that the saved file changed.
   // Remember whether that failure alone raised the warning so a later
   // successful check can clear it without hiding a real conflict or change.
@@ -214,7 +218,7 @@ export function mount(host) {
     const cmd = commands[id];
     return !!cmd && !disposed && !quiesced && !host.signal.aborted && !busy
       && !!editor && (state.loaded || id === 'open' || (id === 'reload' && !!w.launchContext?.path))
-      && (!cmd.file || (!!owner && !replacing))
+      && (!cmd.file || (!!owner && !replacing && !operations.busy))
       && !(id === 'reload' && state.version == null && (state.loaded || !w.launchContext?.path))
       && !(id === 'textLarger' && state.textSize >= 8)
       && !(id === 'textSmaller' && state.textSize <= -2);
@@ -393,8 +397,10 @@ export function mount(host) {
   });
   layoutObserver.observe(body);
 
-  async function load({ target = state.path, checkServer = false } = {}) {
+  async function load({ target = state.path, checkServer = false, operation = null } = {}) {
     if (busy || !valid()) return;
+    const own = !operation, op = operation || operations.begin('load');
+    if (!op) { setNotice('Another file operation is in progress.', 'warning'); return; }
     busy = true; fileCheckRevision++; editor?.setReadOnly(true); setNotice('Opening file…'); lifecycle.changed();
     const token = ++revision; let loadContext = null, broken = false;
     try {
@@ -402,6 +408,8 @@ export function mount(host) {
       if (!valid()) return;
       if (!c.valid()) throw Error('File storage is unavailable.');
       loadContext = c;
+      target = c.path(target);
+      if (!op.claimDocument('mirror:' + target)) throw Error('This file is busy in another window.');
       let offline = false, synced = false;
       if (checkServer) try { await c.files.sync(); synced = true; } catch { offline = true; }
       let r;
@@ -428,6 +436,7 @@ export function mount(host) {
       // device cannot allocate it, the previous editor and path remain open.
       const endings = /\r\n|\r|\n/g; let firstEnding = null, mixed = false, ending;
       while ((ending = endings.exec(text))) { if (firstEnding === null) firstEnding = ending[0]; else if (firstEnding !== ending[0]) { mixed = true; break; } }
+      if (!op.current() || !op.setDocument('mirror:' + target)) throw Error('The file operation was cancelled.');
       editor.replaceDocument(text, target); commandRevision++;
       state.lineEnding = mixed ? '\n' : firstEnding || '\n'; state.mixedLineEndings = mixed;
       state.hasUTF8BOM = r.data.length >= 3 && r.data[0] === 0xef && r.data[1] === 0xbb && r.data[2] === 0xbf;
@@ -445,12 +454,13 @@ export function mount(host) {
           state.loaded = true; state.dirty = false; state.changed = false;
           state.lineEnding = '\n'; state.mixedLineEndings = false; state.hasUTF8BOM = false;
           w.launchContext = null;
+          op.setDocument(null);
           setNotice(error.message + ' A new blank note is ready.', 'error');
         } else if (!state.loaded) setNotice(error.message + ' Use Reload to try again, or open another file.', 'error');
         else setNotice(error.message, 'error');
       }
     } finally {
-      busy = false; lifecycle.changed();
+      busy = false; if (own) op.finish(); lifecycle.changed();
       if (valid()) editor?.setReadOnly(!state.loaded);
       if (!disposed) updateStatus();
       if (valid() && loadContext?.valid()) void observe(loadContext);
@@ -494,10 +504,12 @@ export function mount(host) {
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
   });
 
-  async function save(target = state.path, asCopy = false, command = false) {
+  async function save(target = state.path, asCopy = false, command = false, operation = null) {
     if (busy || replacing || !valid()) return;
     if (!state.loaded) { setNotice('Load the file before saving.', 'warning'); return; }
     if (!asCopy && state.version === null) { showSaveAs(); return; }
+    const own = !operation, op = operation || operations.begin('save');
+    if (!op) { if (command) throw Error('Another file operation is in progress.'); setNotice('Another file operation is in progress.', 'warning'); return; }
     busy = true; fileCheckRevision++; writePending = true; state.dirty = true; lifecycle.changed(); let savedContext = null;
     updateStatus();
     try {
@@ -512,9 +524,11 @@ export function mount(host) {
       const c = await mirrorFileContext();
       if (!valid() || !c.valid()) { if (command) throw Error('The document session ended before saving.'); return; }
       const normalized = c.path(target);
+      if (!op.claimDocument('mirror:' + normalized)) throw Error('This file is busy in another window.');
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
-      if (!valid()) return;
+      if (!valid() || !op.current()) return;
+      if (!op.setDocument('mirror:' + normalized)) throw Error('The file operation was cancelled.');
       if (state.path !== normalized) commandRevision++;
       state.path = normalized; state.version = r.version; state.mixedLineEndings = false; editor.setPath?.(normalized);
       state.changed = r.status === 'conflict'; unavailableWithoutChange = false; state.text = value();
@@ -531,7 +545,7 @@ export function mount(host) {
         if (!backdrop.hidden) { dialogError.textContent = error.message; dialogError.hidden = false; }
       }
       if (command) throw error;
-    } finally { writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } lifecycle.changed(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
+    } finally { if (own) op.finish(); writePending = false; busy = false; if (!disposed && editor) { state.dirty = !editor.isClean(); updateStatus(); } lifecycle.changed(); if (savedContext && valid() && savedContext.valid()) void observe(savedContext); }
   }
   async function confirmDiscard(message) {
     const before = editRevision;
@@ -542,6 +556,7 @@ export function mount(host) {
   }
   async function openFile() {
     if (busy || replacing || !valid()) return;
+    const op = operations.begin('load'); if (!op) { setNotice('Another file operation is in progress.', 'warning'); return; }
     replacing = true; lifecycle.changed(); updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and open another file?')) return;
@@ -555,21 +570,23 @@ export function mount(host) {
       // edits made *after* the first confirmation without asking again.
       if (editRevision !== beforePicker && !await confirmDiscard('Discard edits made while the file picker was open?')) return;
       if (!valid()) return;
-      await load({ target: selected });
+      await load({ target: selected, operation: op });
     } catch (error) { if (valid()) setNotice(error.message, 'error'); }
-    finally { replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
+    finally { op.finish(); replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
   }
   async function reload() {
     if (busy || replacing || !valid()) return;
+    const op = operations.begin('load'); if (!op) { setNotice('Another file operation is in progress.', 'warning'); return; }
     replacing = true; lifecycle.changed(); updateStatus();
     try {
       if (state.dirty && !await confirmDiscard('Discard unsaved changes and reload?')) return;
-      if (valid()) await load({ checkServer: true });
-    } finally { replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
+      if (valid()) await load({ checkServer: true, operation: op });
+    } finally { op.finish(); replacing = false; lifecycle.changed(); if (valid()) updateStatus(); }
   }
   function showSaveAs() {
     if (busy || replacing || !valid()) return;
-    closeMenu();
+    const op = operations.begin('save'); if (!op) { setNotice('Another file operation is in progress.', 'warning'); return; }
+    saveDialogToken = op; closeMenu();
     saveDialogEpoch++;
     const firstSave = state.version === null;
     dialogTitle.textContent = firstSave ? 'Save to My files' : 'Save a copy';
@@ -581,6 +598,7 @@ export function mount(host) {
   }
   function hideSaveAs() {
     const wasOpen = !backdrop.hidden; backdrop.hidden = true;
+    if (saveDialogToken) { saveDialogToken.finish(); saveDialogToken = null; }
     if (wasOpen) { saveDialogEpoch++; folderChoice = null; browseFolder.disabled = busy; lifecycle.changed(); }
     if (wasOpen && !disposed) focusEditor();
   }
@@ -608,7 +626,7 @@ export function mount(host) {
   dialog.addEventListener('submit', event => {
     event.preventDefault();
     if (folderChoice) { dialogError.textContent = 'Finish choosing a folder before saving.'; dialogError.hidden = false; return; }
-    if (pathInput.value.trim()) save(pathInput.value, true);
+    if (pathInput.value.trim() && saveDialogToken) save(pathInput.value, true, false, saveDialogToken);
   });
   function toggleWrap() {
     state.wrap = !state.wrap;
@@ -754,7 +772,7 @@ export function mount(host) {
   });
 
   if (host.commands) {
-    const ready = () => { if (!valid() || !editor || !state.loaded || busy || replacing || !backdrop.hidden) throw Error('The document is not ready for commands.'); };
+    const ready = () => { if (!valid() || !editor || !state.loaded || busy || replacing || operations.busy || !backdrop.hidden) throw Error('The document is not ready for commands.'); };
     const inspect = host.commands.register({id:'inspect',description:'Read a bounded slice of this open text document.',parameters:{type:'object',properties:{start:{type:'integer',minimum:0},length:{type:'integer',minimum:0,maximum:65536}}}},args => {
       ready(); if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(k => !['start','length'].includes(k))) throw Error('Provide optional start and length.');
       const text=value(), start=args.start??0, length=args.length??4096;
@@ -784,15 +802,18 @@ export function mount(host) {
     }); host.onDispose(saveCommand);
   }
 
+  const unsubscribeOperations = operations.subscribe(() => { if (!disposed) { lifecycle.changed(); updateStatus(); } });
+  let initialLoadOp = owner && !state.loaded ? operations.begin('load') : null;
   setNotice('Loading editor…');
   Promise.resolve().then(() => host.tools.loadCodeMirror()).then(module => {
     if (disposed || host.signal.aborted || signedInSubject() !== owner) return;
     editor = module.createEditor({parent:area,text:state.text,wrap:state.wrap,path:state.path,dirty:state.dirty,onChange:onEdit,onSelection:scheduleInfo});
     lifecycle.changed(); host.ui.applyInputMode?.(area);
     if (!owner) { editor.setReadOnly(true); setNotice('Sign in to use your files.', 'warning'); }
-    else if (!state.loaded) load();
+    else if (!state.loaded && initialLoadOp) { const op = initialLoadOp; initialLoadOp = null; void load({operation:op}).finally(() => op.finish()); }
+    else if (!state.loaded) setNotice('This file is busy in another window. Use Reload to try again.', 'warning');
     else setNotice('');
-  }).catch(error => { if (!disposed) setNotice('Editor could not load: '+error.message, 'error'); });
+  }).catch(error => { if (!disposed) setNotice('Editor could not load: '+error.message, 'error'); }).finally(() => { initialLoadOp?.finish(); initialLoadOp = null; });
   return {
     element: body,
     lifecycle: Object.freeze({snapshot:lifecycle.snapshot,subscribe:lifecycle.subscribe,quiesce:lifecycle.quiesce}),
@@ -804,7 +825,7 @@ export function mount(host) {
       if (editor) state.text = editor.getText();
       editor?.destroy(); editor = null;
       revision++; fileCheckRevision++;
-      unsubscribe();
+      unsubscribe(); unsubscribeOperations(); saveDialogToken?.finish(); initialLoadOp?.finish();
       clearTimeout(infoTimer);
       document.removeEventListener('pointerdown', outsideMenu, true);
     }
