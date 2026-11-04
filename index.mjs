@@ -436,8 +436,10 @@ export function mount(host) {
       // device cannot allocate it, the previous editor and path remain open.
       const endings = /\r\n|\r|\n/g; let firstEnding = null, mixed = false, ending;
       while ((ending = endings.exec(text))) { if (firstEnding === null) firstEnding = ending[0]; else if (firstEnding !== ending[0]) { mixed = true; break; } }
-      if (!op.current() || !op.setDocument('mirror:' + target)) throw Error('The file operation was cancelled.');
-      editor.replaceDocument(text, target); commandRevision++;
+      if (!op.current()) throw Error('The file operation was cancelled.');
+      editor.replaceDocument(text, target);
+      if (!op.setDocument('mirror:' + target)) throw Error('The file operation was cancelled.');
+      commandRevision++;
       state.lineEnding = mixed ? '\n' : firstEnding || '\n'; state.mixedLineEndings = mixed;
       state.hasUTF8BOM = r.data.length >= 3 && r.data[0] === 0xef && r.data[1] === 0xbb && r.data[2] === 0xbf;
       state.path = target; state.text = text; state.version = r.version;
@@ -808,6 +810,7 @@ export function mount(host) {
   Promise.resolve().then(() => host.tools.loadCodeMirror()).then(module => {
     if (disposed || host.signal.aborted || signedInSubject() !== owner) return;
     editor = module.createEditor({parent:area,text:state.text,wrap:state.wrap,path:state.path,dirty:state.dirty,onChange:onEdit,onSelection:scheduleInfo});
+    editor.setReadOnly(!state.loaded);
     lifecycle.changed(); host.ui.applyInputMode?.(area);
     if (!owner) { editor.setReadOnly(true); setNotice('Sign in to use your files.', 'warning'); }
     else if (!state.loaded && initialLoadOp) { const op = initialLoadOp; initialLoadOp = null; void load({operation:op}).finally(() => op.finish()); }
