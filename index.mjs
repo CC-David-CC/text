@@ -528,6 +528,7 @@ export function mount(host) {
       const normalized = c.path(target);
       if (!op.claimDocument('mirror:' + normalized)) throw Error('This file is busy in another window.');
       if (asCopy && state.version !== null && normalized === c.path(state.path)) throw Error('Choose a different path for Save As.');
+      if (!op.enterLocalWrite()) throw new DOMException('The document session ended before saving.', 'AbortError');
       const r = await c.files.write(normalized, snapshot, asCopy ? null : state.version);
       if (!valid() || !op.current()) return;
       if (!op.setDocument('mirror:' + normalized)) throw Error('The file operation was cancelled.');
