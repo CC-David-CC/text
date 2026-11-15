@@ -170,3 +170,25 @@ checks, and a new path cannot overwrite an existing file. The result reports a
 local pending or conflict status rather than claiming server synchronization.
 If the editor has mixed line endings, save through the visible interface so the
 conversion can be confirmed. These commands do not expose a remote agent API.
+
+## Fresh WebOS entrypoint
+
+The public `@webos/text` entrypoint at `webos/index.mjs` mounts synchronously and
+uses the independently owned `@webos/codemirror` editor. Each window owns one
+live document. UI editing, undo and authorized document operations use that
+same editor state. The legacy view above remains preserved source; it is not
+loaded through a hidden compatibility host.
+
+Files supplies a selected path/revision; Text reads through the same Storage
+service. Saves use that exact revision, and Save As creates a separate account
+resource. Only confirmed server responses mark the captured editor snapshot
+saved; edits made during a save remain dirty. Closing Files does not own Text's
+storage service. Unsaved-close offers Save, Discard and Cancel; failed or pending
+saves keep the document open.
+
+UTF-8 BOM and uniform LF/CRLF/CR endings are preserved. Invalid UTF-8 is refused.
+Mixed-line-ending files cannot be saved until an explicit normalization workflow
+is implemented, preventing silent conversion. Legacy find/replace, file menus,
+phone layout and other retained features still require deliberate qualification
+in this new view. This first integration qualifies the requested two-document
+editing round trip, not every legacy feature or a hosted deployment.

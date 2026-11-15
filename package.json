@@ -1,0 +1,13 @@
+{
+  "name": "@webos/text",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./webos/index.mjs",
+  "dependencies": {
+    "@webos/codemirror": "0.1.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
