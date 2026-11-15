@@ -192,3 +192,12 @@ is implemented, preventing silent conversion. Legacy find/replace, file menus,
 phone layout and other retained features still require deliberate qualification
 in this new view. This first integration qualifies the requested two-document
 editing round trip, not every legacy feature or a hosted deployment.
+
+The command entrypoint captures the file binding, confirmed revision and live
+editor snapshot beside its copied command arguments before awaiting permission.
+If Save As rebinds the document, another save advances its confirmed revision,
+or typing changes the document while authorization waits, that pending command
+is refused. A permission decision for an earlier file or text range cannot be
+reused for the newer state. The focused boundary tests use a synthetic editor;
+the parent's browser acceptance tests exercise the real CodeMirror editor and
+account storage.

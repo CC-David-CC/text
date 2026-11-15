@@ -57,8 +57,13 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     check(); if (!loaded) throw Error('Document is not ready.');
     if (request?.instanceId !== instanceId || request.sessionId !== sessionId || request.documentId !== documentId || !Object.hasOwn(operations, request.operation)) throw Error('Explicit current Text instance, session and document required.');
     const args = structuredClone(request.args || {}), operation = request.operation;
-    if (await authorize(candidate, {instanceId, sessionId, documentId, operation, path, destination: args.destination ?? null}) !== true) throw Error('Text operation denied.');
-    check(); return operations[operation](args);
+    const capturedPath = path, capturedRevision = revision, capturedDocument = editor.snapshot();
+    if (await authorize(candidate, {instanceId, sessionId, documentId, operation, path: capturedPath, destination: args.destination ?? null}) !== true) throw Error('Text operation denied.');
+    check();
+    // A permission decision for an earlier binding or text range cannot be
+    // applied to a file rebound by Save As or a newer live editor document.
+    if (path !== capturedPath || revision !== capturedRevision || editor.snapshot() !== capturedDocument) throw Error('Text document changed while authorization was pending.');
+    return operations[operation](args);
   }
   const run = (operation, args = {}) => execute({instanceId, sessionId, documentId, operation, args}, authority);
   function notify(error) { if (!disposed && error.name !== 'AbortError') status.textContent = error.message; }
