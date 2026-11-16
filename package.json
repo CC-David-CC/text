@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": {".": "./webos/index.mjs", "./recovery": "./webos/drafts.mjs"},
+  "exports": {
+    ".": "./webos/index.mjs",
+    "./recovery": "./webos/drafts.mjs"
+  },
   "dependencies": {
-    "@webos/codemirror": "0.1.0"
+    "@webos/codemirror": "0.1.0",
+    "@webos/runtime": "0.1.0"
   },
   "scripts": {
     "test": "node --experimental-vm-modules --test tests/*.test.mjs",
