@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": "./webos/index.mjs",
+  "exports": {".": "./webos/index.mjs", "./recovery": "./webos/drafts.mjs"},
   "dependencies": {
     "@webos/codemirror": "0.1.0"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs",
     "test:reference": "node --test --test-reporter=tap tests/reference/*.test.mjs"
   }
 }

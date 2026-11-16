@@ -1,5 +1,9 @@
 # Application module and invariants
 
+Current viewer entry: `webos/index.mjs` (the public `@webos/text` export).
+The earlier sections below describe the retained legacy root `index.mjs`.
+The Fresh WebOS and Local recovery sections describe the active integration.
+
 ## Integration contract
 
 `index.mjs` exports synchronous `mount(host)` and immediately returns
@@ -201,3 +205,53 @@ is refused. A permission decision for an earlier file or text range cannot be
 reused for the newer state. The focused boundary tests use a synthetic editor;
 the parent's browser acceptance tests exercise the real CodeMirror editor and
 account storage.
+
+## Local recovery and desktop lifecycle
+
+The active view now publishes the existing synchronous lifecycle contract:
+`snapshot()` reports dirty/pending state, `subscribe()` reports changes, and
+`quiesce()` pauses editing reversibly during session shutdown. The composition
+adapter forwards it, so Desktop's browser unload warning reads the real
+CodeMirror state. Clean Text does not warn; unsaved edits and pending saves do.
+Ordinary window close retains Save, Discard and Cancel.
+
+`@webos/text/recovery` owns a browser-local IndexedDB store and serialized draft
+journal. Records are scoped by issuer/account subject and a stable draft ID,
+not by a short-lived login session. Every mounted writer gets its own new ID,
+so another live view cannot overwrite its recovery record. Snapshots contain
+text, format, account path and last confirmed server revision; never account
+tokens, passwords or signing keys. These are same-origin browser records, not
+an isolation boundary against trusted applications running on that origin.
+
+Edits schedule a checkpoint after250ms. Status reports a local recovery draft
+only after the IndexedDB transaction completes, explicitly distinct from an
+account save. Visibility/pagehide also request a checkpoint, but unload is not
+relied upon for durability. Storage failures remain visible; the unsaved-work
+warning and actual account Save continue to work. Browser storage can be cleared
+or evicted, and a crash can lose edits newer than the last committed checkpoint.
+This is browser-local recovery, not account synchronization or a crash-proof backup.
+
+After the same account signs in, restored Text windows offer Recover draft,
+Discard draft or Later. The parent also discovers orphan drafts when layout
+metadata is missing. Later retains the record and offers a Recover draft
+command in that view. Recovery populates the one real editor and marks it
+unsaved. If the server revision changed or cannot be verified, ordinary Save
+is refused and Save As creates a separate file; no recovery action silently
+overwrites a server file. The original BOM and uniform line-ending format stay
+with the draft. Mixed endings retain their existing save refusal.
+
+A successful Save clears only the acknowledged snapshot. Typing during Save
+keeps newer edits dirty and checkpoints their new base revision. Writes and
+deletions are ordered, and source deletion uses its captured generation so a
+concurrently updated draft is retained. Discard is staged by `requestClose()`;
+the optional lifecycle `commitClose()` removes drafts only when Desktop really
+closes the view. Cancelling another window's session-close prompt keeps earlier
+drafts intact. Teardown after an approved server logout can clear its captured
+local records without borrowing another account's authority.
+
+Use the parent `tests/text_recovery_browser.mjs` for actual CodeMirror,
+IndexedDB, browser-warning and signed-account acceptance. Unit tests cover
+immutable journal captures, ordering, discard races and stale-source deletion.
+The separate clean Save As path/title/layout restoration bug, duplicate-file
+activation and login persistence remain separate fixes; this feature does not
+claim those are corrected.

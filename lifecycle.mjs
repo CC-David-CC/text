@@ -1,4 +1,4 @@
-// Reference contract for Text; the desktop loader does not consume it yet.
+// Text lifecycle shared by the active view and desktop integration.
 export function createTextLifecycle({readState, pause, resume}) {
   let revision=0, closed=false, lease=null;
   const listeners=new Set();

@@ -20,14 +20,16 @@ async function fixture(policy) {
     replaceDocument: setText, getText: () => text, snapshot: () => snapshot,
     isClean: () => snapshot === saved, markSaved: value => { saved = value; },
     replace(from, to, value) { setText(text.slice(0, from) + value + text.slice(to)); }};
-  const context = vm.createContext({document: {createElement: () => new Element()}, crypto: {randomUUID},
+  const document = Object.assign(new EventTarget(), {createElement: () => new Element()});
+  const context = vm.createContext({document, crypto: {randomUUID}, setTimeout, clearTimeout,
     AbortController, DOMException, structuredClone, Blob, Uint8Array, TextDecoder, TextEncoder});
   const module = new vm.SourceTextModule(await readFile(new URL('../webos/index.mjs', import.meta.url), 'utf8'), {context});
   await module.link(async name => {
     if (name === '@webos/codemirror') return new vm.SyntheticModule(['createEditor'], function () { this.setExport('createEditor', () => editor); }, {context});
     if (name === './style.css') return new vm.SyntheticModule([], () => {}, {context});
-    assert.equal(name, './text-format.mjs');
-    return new vm.SourceTextModule(await readFile(new URL('../webos/text-format.mjs', import.meta.url), 'utf8'), {context});
+    assert(['./text-format.mjs', '../lifecycle.mjs'].includes(name));
+    const url = name === './text-format.mjs' ? '../webos/text-format.mjs' : '../lifecycle.mjs';
+    return new vm.SourceTextModule(await readFile(new URL(url, import.meta.url), 'utf8'), {context});
   });
   await module.evaluate();
   const view = module.namespace.mount({instanceId: 'text-1', sessionId: 'session-1', authority,
