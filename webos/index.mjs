@@ -10,17 +10,19 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
   const toolbar = document.createElement('nav'), title = document.createElement('span'), status = document.createElement('div'), recoveryStatus = document.createElement('div'), surface = document.createElement('div');
   toolbar.setAttribute('aria-label', 'Text commands'); status.className = 'webos-text-status'; status.setAttribute('role', 'status'); recoveryStatus.className = 'webos-text-recovery'; surface.className = 'webos-text-editor';
   const events = new AbortController();
-  let disposed = false, loaded = false, busy = false, paused = false, path = resource?.path ?? null, revision = null, dialog = null,
+  let disposed = false, loaded = false, busy = false, loading = false, loadError = '', paused = false, path = resource?.path ?? null, revision = null, dialog = null,
     format = {bom:false, lineEnding:'\n', mixed:false}, lifecycle, timer, checkpointSequence = 0, recoveryState = recovery ? 'ready' : 'unavailable', closeIntent = null, needsCopy = false, recoveryDeferred = false;
   const editor = createEditor({parent: surface, path: path || 'Untitled.txt', onChange: () => {
     if (disposed) return; closeIntent = null; lifecycle?.changed();
     if (loaded) { render(); clearTimeout(timer); timer = setTimeout(() => { void checkpoint().catch(() => {}); }, 250); }
   }}); editor.setReadOnly(true);
   function check() { if (disposed || signal?.aborted) throw new DOMException('Text view closed.', 'AbortError'); files.check(); }
-  const inspect = () => Object.freeze({instanceId, sessionId, documentId, path, revision, dirty: loaded && !editor.isClean(), loaded, busy, disposed, recovery: recoveryState, needsCopy});
+  const inspect = () => Object.freeze({instanceId, sessionId, documentId, path, revision, dirty: loaded && !editor.isClean(), loaded, busy, loading, loadError, disposed, recovery: recoveryState, needsCopy});
   function render() {
     title.textContent = (path || 'Untitled.txt') + (editor.isClean() ? '' : ' *');
-    save.disabled = busy || !loaded || needsCopy; saveAs.disabled = busy || !loaded; recover.hidden = !recoveryDeferred;
+    save.disabled = saveAs.disabled = busy || loading || !loaded; save.disabled ||= needsCopy;
+    recover.hidden = !recoveryDeferred; recover.disabled = loading;
+    retry.hidden = !loadError || loaded; retry.disabled = loading;
   }
   lifecycle = createTextLifecycle({readState: () => ({dirty: loaded && !editor.isClean(), pending: busy}),
     pause() { paused = true; editor.setReadOnly(true); }, resume() { paused = false; editor.setReadOnly(!loaded); }});
@@ -59,6 +61,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     });
   }
   const operations = {
+    retry: () => initialize(),
     inspect: () => ({...inspect(), text: editor.getText()}),
     replace({from, to, text}) { if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > editor.getText().length || typeof text !== 'string') throw TypeError('Valid text range required.'); editor.replace(from, to, text); return {status:'edited'}; },
     undo() {editor.undo(); return {status:'undone'};},
@@ -74,6 +77,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
         const result = await files.write(target, encodeText(text, format), previous, {signal}); check();
         if (!/^[0-9a-f]{64}$/.test(result.sha256 || '')) throw Error('Invalid server save confirmation.');
         path = target; revision = result.sha256; needsCopy = false; editor.setPath(path); editor.markSaved(snapshot);
+        lifecycle.changed();
         status.textContent = editor.isClean() ? 'Saved to your account.' : 'Saved revision; newer edits remain unsaved.';
         await checkpoint().catch(() => {});
         return {status:'saved', path, revision, dirty: !editor.isClean()};
@@ -82,7 +86,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     }
   };
   async function execute(request, candidate) {
-    check(); if (!loaded) throw Error('Document is not ready.');
+    check(); if (!loaded && request?.operation !== 'retry') throw Error('Document is not ready.');
     if (request?.instanceId !== instanceId || request.sessionId !== sessionId || request.documentId !== documentId || !Object.hasOwn(operations, request.operation)) throw Error('Explicit current Text instance, session and document required.');
     const args = structuredClone(request.args || {}), operation = request.operation;
     const capturedPath = path, capturedRevision = revision, capturedDocument = editor.snapshot();
@@ -93,12 +97,15 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     return operations[operation](args);
   }
   const run = (operation, args = {}) => execute({instanceId, sessionId, documentId, operation, args}, authority);
-  function notify(error) { if (!disposed && error.name !== 'AbortError') status.textContent = error.message; }
+  function notify(error) { if (!disposed && error.name !== 'AbortError' && !loadError) status.textContent = error.message; }
   async function saveDocument(asCopy = false) { const destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined; if (destination === null) return false; await run('save', destination === undefined ? {} : {destination}); return editor.isClean(); }
   function button(text, callback) { const node = document.createElement('button'); node.type = 'button'; node.textContent = text; node.addEventListener('click', () => Promise.resolve().then(callback).catch(notify), {signal: events.signal}); toolbar.append(node); return node; }
-  const save = button('Save', () => saveDocument()), saveAs = button('Save As', () => saveDocument(true)); button('Undo', () => run('undo')); button('Redo', () => run('redo')); const recover = button('Recover draft', () => initialize()); recover.hidden = true; toolbar.append(title); element.append(toolbar, surface, status, recoveryStatus);
+  const save = button('Save', () => saveDocument()), saveAs = button('Save As', () => saveDocument(true)); button('Undo', () => run('undo')); button('Redo', () => run('redo'));
+  const recover = button('Recover draft', () => run('retry')), retry = button('Retry', () => run('retry')); recover.hidden = retry.hidden = true; toolbar.append(title); element.append(toolbar, surface, status, recoveryStatus);
   element.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); saveDocument(event.shiftKey).catch(notify); } }, {signal: events.signal});
   async function initialize() {
+    check(); if (loaded) throw Error('The document is already open.'); if (loading) throw Error('The document is still loading.');
+    loading = true; loadError = ''; render();
     try {
       let draft;
       if (recovery) { try { draft = await recovery.load(); check(); } catch (error) { check(); recoveryNotice('failed', 'Local recovery unavailable: ' + error.message); } }
@@ -118,11 +125,14 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
       }
       if (path) {
         const result = await files.read(path); check();
-        if (resource.sha256 && result.sha256 !== resource.sha256) throw Error('Account file changed before opening. Refresh Files.');
+        if (!resource.restore && resource.sha256 && result.sha256 !== resource.sha256) throw Error('Account file changed before opening. Refresh Files.');
         const bytes = result.data instanceof Blob ? new Uint8Array(await result.data.arrayBuffer()) : result.data; check(); format = decodeText(bytes); editor.replaceDocument(format.text, path); revision = result.sha256;
       }
       check(); loaded = true; editor.setReadOnly(false); status.textContent = 'Account document ready.'; lifecycle.changed(); render();
-    } catch(error) { notify(error); throw error; }
+    } catch(error) {
+      if (!disposed && error.name !== 'AbortError') { loadError = error.message; status.textContent = 'Could not open ' + (path || 'this document') + ': ' + error.message + ' Retry when it is available.'; }
+      throw error;
+    } finally { loading = false; if (!disposed) render(); }
   }
   const ready = initialize(); ready.catch(() => {});
   const persist = () => { if (!disposed && loaded) void checkpoint().catch(() => {}); };
@@ -138,7 +148,16 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     try { if (loaded) await recovery?.clear(); recovery?.close(); return true; }
     catch (error) { paused = wasPaused; editor.setReadOnly(paused || !loaded); notify(error); throw error; }
   }});
-  return Object.freeze({element, ready, inspect, execute, lifecycle: publicLifecycle, dispose, async requestClose() {
+  const bindingSnapshot = () => Object.freeze({documentId, path, revision, loaded});
+  const fileBinding = Object.freeze({snapshot: bindingSnapshot, subscribe(listener) {
+    if (typeof listener !== 'function') throw TypeError('File binding listener required.');
+    let previous = bindingSnapshot();
+    return lifecycle.subscribe(() => { const next = bindingSnapshot();
+      if (next.path === previous.path && next.revision === previous.revision && next.loaded === previous.loaded) return;
+      previous = next; listener(next);
+    });
+  }});
+  return Object.freeze({element, ready, inspect, execute, fileBinding, retry: () => run('retry'), lifecycle: publicLifecycle, dispose, async requestClose() {
     check(); closeIntent = null;
     if (busy) {status.textContent = 'Wait for the current save before closing.'; return false;}
     if (!loaded || editor.isClean()) return true;

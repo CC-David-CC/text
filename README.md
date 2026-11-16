@@ -252,6 +252,36 @@ local records without borrowing another account's authority.
 Use the parent `tests/text_recovery_browser.mjs` for actual CodeMirror,
 IndexedDB, browser-warning and signed-account acceptance. Unit tests cover
 immutable journal captures, ordering, discard races and stale-source deletion.
-The separate clean Save As path/title/layout restoration bug, duplicate-file
-activation and login persistence remain separate fixes; this feature does not
-claim those are corrected.
+Duplicate-file activation and login persistence remain separate fixes.
+
+## Confirmed file binding and restoration
+
+The active view publishes a read-only `fileBinding` interface. `snapshot()`
+returns document identity, path, confirmed revision and loaded state; `subscribe`
+reports changes to that metadata, without text or credentials. A successful
+Save/Save As updates the binding from the acknowledged server result. A rejected
+or cancelled save keeps the previous binding; edits during a save remain dirty.
+The composition forwards this signal to Desktop's owned window-binding method,
+which updates caption, accessibility label and saved layout without remounting
+the editor or inventing a parallel `w.editor` document model.
+
+A layout entry is historical navigation information. Desktop marks a restored
+Text launch explicitly; Text reads the file's current server bytes and records
+their actual revision rather than treating the old layout SHA as a permanent
+open precondition. Files-selected launches keep their exact selected SHA check.
+Unsaved recovery drafts still retain their captured base revision and cannot
+silently overwrite a changed server file.
+
+Missing/unavailable or invalid text files keep their path and read-only error
+view. Retry runs the same authorized read operation in the same document/window;
+it never substitutes a blank editable note. `ready` reports the initial attempt
+(including rejection); current `inspect()` state and the explicit Retry promise
+report later attempts. The active editor is retained after a failed read so
+retry is not trapped behind a permanently rejected initial promise.
+
+The parent's `tests/text_binding_browser.mjs` verifies first Save, ordinary Save,
+Save As, two-document reload/sign-in, fresh-context server bytes, newer external
+revisions, missing files, injected read-service failure, failed/cancelled Save As,
+and edits during a delayed Save As followed by recovery and clean restoration.
+The existing recovery suite now leaves the saved copy open across refresh;
+its earlier clean-SaveAs workaround is removed.
