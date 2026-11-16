@@ -252,7 +252,7 @@ local records without borrowing another account's authority.
 Use the parent `tests/text_recovery_browser.mjs` for actual CodeMirror,
 IndexedDB, browser-warning and signed-account acceptance. Unit tests cover
 immutable journal captures, ordering, discard races and stale-source deletion.
-Duplicate-file activation and login persistence remain separate fixes.
+Login persistence remains a separate fix.
 
 ## Confirmed file binding and restoration
 
@@ -285,3 +285,21 @@ revisions, missing files, injected read-service failure, failed/cancelled Save A
 and edits during a delayed Save As followed by recovery and clean restoration.
 The existing recovery suite now leaves the saved copy open across refresh;
 its earlier clean-SaveAs workaround is removed.
+
+## Existing document activation
+
+The optional synchronous `focus()` returns true after focusing the existing
+CodeMirror editor. It returns false while loading or displaying an app dialog,
+so activation cannot replace the document or bypass recovery/close decisions.
+Selection and undo history remain owned by that editor. Desktop uses the
+confirmed file binding to find an existing Text window by account/full path,
+restores it and selects its workspace. Reopening does not read or repin its
+server revision, even when another browser changed or removed that file. Normal
+Save revision checks still protect against overwriting changed server content.
+
+Save As moves this window's activation identity to its acknowledged new path;
+the original path can open separately. Different folders with the same basename
+and untitled documents remain independent. Closing removes the window naturally;
+reopening creates a new editor. The parent activation browser suite exercises
+actual selection, undo/redo, minimized/rolled windows, workspaces, Save As,
+concurrent Files opens, foreign-account refusal and server changes.

@@ -125,7 +125,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
       }
       if (path) {
         const result = await files.read(path); check();
-        if (!resource.restore && resource.sha256 && result.sha256 !== resource.sha256) throw Error('Account file changed before opening. Refresh Files.');
+        if (!resource.restore && resource.sha256 && result.sha256 !== resource.sha256) throw Error('Account file changed before opening. Close this view, refresh Files and open the current file.');
         const bytes = result.data instanceof Blob ? new Uint8Array(await result.data.arrayBuffer()) : result.data; check(); format = decodeText(bytes); editor.replaceDocument(format.text, path); revision = result.sha256;
       }
       check(); loaded = true; editor.setReadOnly(false); status.textContent = 'Account document ready.'; lifecycle.changed(); render();
@@ -157,7 +157,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
       previous = next; listener(next);
     });
   }});
-  return Object.freeze({element, ready, inspect, execute, fileBinding, retry: () => run('retry'), lifecycle: publicLifecycle, dispose, async requestClose() {
+  return Object.freeze({element, ready, inspect, execute, fileBinding, retry: () => run('retry'), focus() {check(); if (!loaded || dialog) return false; editor.focus(); return true;}, lifecycle: publicLifecycle, dispose, async requestClose() {
     check(); closeIntent = null;
     if (busy) {status.textContent = 'Wait for the current save before closing.'; return false;}
     if (!loaded || editor.isClean()) return true;
