@@ -1,2 +1,90 @@
-.webos-text{height:100%;display:flex;flex-direction:column;min-height:0;background:white;color:#182331;font:15px system-ui}.webos-text nav{display:flex;gap:8px;align-items:center;padding:8px;background:#edf2f7}.webos-text nav span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.webos-text-editor{flex:1;min-height:0;font:16px monospace}.webos-text-status{padding:6px 10px;border-top:1px solid #ccd5df}.webos-text-dialog form{display:grid;gap:12px}.webos-text-dialog label{display:grid;gap:6px}
-.webos-text-recovery{padding:4px 10px;font-size:12px;background:#fff8e6}.webos-text-recovery:empty{display:none}
+.webos-text {
+  --text-surface: light-dark(#fff, var(--desktop-surface, #252a30));
+  --text-raised: light-dark(#edf2f7, var(--desktop-raised, #353d46));
+  --text-border: light-dark(#7e8b99, #798793);
+  --text-color: light-dark(#182331, var(--desktop-text, #f3f6f8));
+  --text-muted: light-dark(#536371, var(--desktop-muted, #b9c3cc));
+  --text-focus: light-dark(#135eb0, #a4ceff);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--text-surface);
+  color: var(--text-color);
+  font: 15px system-ui;
+}
+
+.webos-text nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  background: var(--text-raised);
+}
+
+.webos-text nav span {
+  flex: 1 1 80px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webos-text button,
+.webos-text-dialog input {
+  padding: 4px 8px;
+  min-height: 32px;
+  border: 1px solid var(--text-border);
+  border-radius: 4px;
+  background: var(--text-surface);
+  color: var(--text-color);
+  font: inherit;
+}
+
+.webos-text button:disabled {
+  background: var(--text-raised);
+  color: var(--text-muted);
+}
+
+.webos-text :is(button, input):focus-visible {
+  outline: 2px solid var(--text-focus);
+  outline-offset: 2px;
+}
+
+.webos-text-editor {
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+  color: #182331;
+  color-scheme: light;
+  font: 16px monospace;
+}
+
+.webos-text-status {
+  padding: 6px 10px;
+  border-top: 1px solid var(--text-border);
+}
+
+.webos-text-dialog {
+  max-width: min(30rem, calc(100% - 32px));
+  padding: 16px;
+  border: 1px solid var(--text-border);
+  border-radius: 6px;
+  background: var(--text-surface);
+  color: var(--text-color);
+}
+
+.webos-text-dialog::backdrop { background: #0007; }
+.webos-text-dialog form { display: grid; gap: 12px; }
+.webos-text-dialog h2 { margin: 0; font-size: 1.15rem; }
+.webos-text-dialog label { display: grid; gap: 6px; min-width: 0; }
+.webos-text-dialog input { min-width: 0; }
+
+.webos-text-recovery {
+  padding: 4px 10px;
+  background: light-dark(#fff8e6, #3b311c);
+  font-size: 12px;
+}
+
+.webos-text-recovery:empty { display: none; }

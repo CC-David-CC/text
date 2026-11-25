@@ -4,7 +4,7 @@ import './style.css';
 import {decodeText, encodeText} from './text-format.mjs';
 
 /** One live CodeMirror document; local recovery never claims an account save. */
-export function mount({instanceId, sessionId, resource = null, files, authority, authorize, signal, recovery = null}) {
+export function mount({instanceId, sessionId, resource = null, files, authority, authorize, signal, recovery = null, temporary = false}) {
   if (!instanceId || !sessionId || !files || typeof authorize !== 'function') throw TypeError('Explicit Text instance, session, Storage and authorization required.');
   const documentId = crypto.randomUUID(), element = document.createElement('div'); element.className = 'webos-text';
   const toolbar = document.createElement('nav'), title = document.createElement('span'), status = document.createElement('div'), recoveryStatus = document.createElement('div'), surface = document.createElement('div');
@@ -45,7 +45,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     heading.textContent = kind === 'path' ? 'Save As' : kind === 'recovery' ? 'Recover unsaved Text?' : 'Unsaved changes';
     heading.id = 'text-dialog-' + crypto.randomUUID(); node.setAttribute('aria-labelledby', heading.id); form.append(heading);
     let input;
-    if (kind === 'path') { const label = document.createElement('label'); label.textContent = 'Account file path'; input = document.createElement('input'); input.value = initial; input.required = true; label.append(input); form.append(label); }
+    if (kind === 'path') { const label = document.createElement('label'); label.textContent = temporary ? 'Temporary file path' : 'Account file path'; input = document.createElement('input'); input.value = initial; input.required = true; label.append(input); form.append(label); }
     else { const message = document.createElement('p'); message.textContent = kind === 'recovery' ? 'A local recovery draft for ' + (initial || 'an untitled document') + ' is available in this browser. It is not a confirmed account save.' : 'Save changes before closing this document?'; form.append(message); }
     node.append(form); element.append(node);
     return new Promise(resolve => {
@@ -68,20 +68,22 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     redo() {editor.redo(); return {status:'redone'};},
     async save({destination = null} = {}) {
       if (busy) throw Error('A save is already running.');
-      if (destination !== null && (typeof destination !== 'string' || !destination || destination.startsWith('/') || destination.split('/').some(part => !part || part === '.' || part === '..' || part.startsWith('.') || /[\0\\]/.test(part)))) throw TypeError('Relative account file path required.');
+      if (destination !== null && (typeof destination !== 'string' || !destination || destination.startsWith('/') || destination.split('/').some(part => !part || part === '.' || part === '..' || part.startsWith('.') || /[\0\\]/.test(part)))) throw TypeError('Relative file path required.');
       const target = destination || path; if (!target) throw Error('Choose Save As for a new document.');
       if (needsCopy && target === path) throw Error('The server file changed or could not be verified. Use Save As to keep this recovered draft.');
       const previous = destination && destination !== path ? null : revision;
-      const snapshot = editor.snapshot(), text = snapshot.toString(); busy = true; closeIntent = null; lifecycle.changed(); render(); status.textContent = 'Saving to your account…';
+      const snapshot = editor.snapshot(), text = snapshot.toString(); busy = true; closeIntent = null; lifecycle.changed(); render(); status.textContent = temporary ? 'Saving to temporary Files…' : 'Saving to your account…';
       try {
         const result = await files.write(target, encodeText(text, format), previous, {signal}); check();
-        if (!/^[0-9a-f]{64}$/.test(result.sha256 || '')) throw Error('Invalid server save confirmation.');
+        if (!/^[0-9a-f]{64}$/.test(result.sha256 || '')) throw Error('Invalid save confirmation.');
         path = target; revision = result.sha256; needsCopy = false; editor.setPath(path); editor.markSaved(snapshot);
         lifecycle.changed();
-        status.textContent = editor.isClean() ? 'Saved to your account.' : 'Saved revision; newer edits remain unsaved.';
+        status.textContent = editor.isClean()
+          ? (temporary ? 'Saved to temporary Files. Download a copy before reloading.' : 'Saved to your account.')
+          : 'Saved revision. Newer edits remain unsaved.';
         await checkpoint().catch(() => {});
         return {status:'saved', path, revision, dirty: !editor.isClean()};
-      } catch (error) { if (!disposed) status.textContent = error.outcome === 'unknown' ? 'Save outcome unknown. Check the account file before retrying.' : 'Not saved: ' + error.message; throw error; }
+      } catch (error) { if (!disposed) status.textContent = error.outcome === 'unknown' ? 'Save outcome unknown. Check Files before retrying.' : 'Not saved: ' + error.message; throw error; }
       finally { busy = false; if (!disposed) { lifecycle.changed(); render(); } }
     }
   };
@@ -125,10 +127,14 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
       }
       if (path) {
         const result = await files.read(path); check();
-        if (!resource.restore && resource.sha256 && result.sha256 !== resource.sha256) throw Error('Account file changed before opening. Close this view, refresh Files and open the current file.');
+        if (!resource.restore && resource.sha256 && result.sha256 !== resource.sha256) throw Error('File changed before opening. Close this view, refresh Files and open the current file.');
         const bytes = result.data instanceof Blob ? new Uint8Array(await result.data.arrayBuffer()) : result.data; check(); format = decodeText(bytes); editor.replaceDocument(format.text, path); revision = result.sha256;
       }
-      check(); loaded = true; editor.setReadOnly(false); status.textContent = 'Account document ready.'; lifecycle.changed(); render();
+      check(); loaded = true; editor.setReadOnly(false);
+      status.textContent = temporary
+        ? 'Temporary Files. Download a copy before reloading.'
+        : path ? 'Account document ready.' : 'New document. Save it to your account.';
+      lifecycle.changed(); render();
     } catch(error) {
       if (!disposed && error.name !== 'AbortError') { loadError = error.message; status.textContent = 'Could not open ' + (path || 'this document') + ': ' + error.message + ' Retry when it is available.'; }
       throw error;
