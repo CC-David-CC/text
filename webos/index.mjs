@@ -84,7 +84,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
         await checkpoint().catch(() => {});
         return {status:'saved', path, revision, dirty: !editor.isClean()};
       } catch (error) {
-        notifySave(error);
+        notifySave(error, target);
         throw error;
       }
       finally { busy = false; if (!disposed) { lifecycle.changed(); render(); } }
@@ -103,24 +103,29 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
   }
   const run = (operation, args = {}) => execute({instanceId, sessionId, documentId, operation, args}, authority);
   function notify(error) { if (!disposed && error.name !== 'AbortError' && !loadError) status.textContent = error.message; }
-  function notifySave(error) {
+  function notifySave(error, target = path) {
     if (disposed || error.name === 'AbortError' || loadError) return;
     if (error.outcome === 'unknown') {
       status.textContent = 'Save outcome unknown. Check Files before retrying.';
     } else if (error.status === 401) {
       status.textContent = 'Not saved. Your session ended. Copy any unsaved edits, then reload WebOS and sign in again.';
+    } else if (error.status === 409) {
+      status.textContent = target === path
+        ? 'Not saved. The saved file changed. Use Save As to keep your edits in a separate file.'
+        : 'Not saved. That path already exists. Choose a different name or folder in Save As.';
     } else {
       status.textContent = 'Not saved: ' + error.message;
     }
   }
   async function saveDocument(asCopy = false) {
+    let destination;
     try {
-      const destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined;
+      destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined;
       if (destination === null) return false;
       await run('save', destination === undefined ? {} : {destination});
       return editor.isClean();
     } catch (error) {
-      notifySave(error);
+      notifySave(error, destination);
       return false;
     }
   }
