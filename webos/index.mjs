@@ -83,7 +83,10 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
           : 'Saved revision. Newer edits remain unsaved.';
         await checkpoint().catch(() => {});
         return {status:'saved', path, revision, dirty: !editor.isClean()};
-      } catch (error) { if (!disposed) status.textContent = error.outcome === 'unknown' ? 'Save outcome unknown. Check Files before retrying.' : 'Not saved: ' + error.message; throw error; }
+      } catch (error) {
+        notifySave(error);
+        throw error;
+      }
       finally { busy = false; if (!disposed) { lifecycle.changed(); render(); } }
     }
   };
@@ -100,7 +103,27 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
   }
   const run = (operation, args = {}) => execute({instanceId, sessionId, documentId, operation, args}, authority);
   function notify(error) { if (!disposed && error.name !== 'AbortError' && !loadError) status.textContent = error.message; }
-  async function saveDocument(asCopy = false) { const destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined; if (destination === null) return false; await run('save', destination === undefined ? {} : {destination}); return editor.isClean(); }
+  function notifySave(error) {
+    if (disposed || error.name === 'AbortError' || loadError) return;
+    if (error.outcome === 'unknown') {
+      status.textContent = 'Save outcome unknown. Check Files before retrying.';
+    } else if (error.status === 401) {
+      status.textContent = 'Not saved. Your session ended. Copy any unsaved edits, then reload WebOS and sign in again.';
+    } else {
+      status.textContent = 'Not saved: ' + error.message;
+    }
+  }
+  async function saveDocument(asCopy = false) {
+    try {
+      const destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined;
+      if (destination === null) return false;
+      await run('save', destination === undefined ? {} : {destination});
+      return editor.isClean();
+    } catch (error) {
+      notifySave(error);
+      return false;
+    }
+  }
   function button(text, callback) { const node = document.createElement('button'); node.type = 'button'; node.textContent = text; node.addEventListener('click', () => Promise.resolve().then(callback).catch(notify), {signal: events.signal}); toolbar.append(node); return node; }
   const save = button('Save', () => saveDocument()), saveAs = button('Save As', () => saveDocument(true)); button('Undo', () => run('undo')); button('Redo', () => run('redo'));
   const recover = button('Recover draft', () => run('retry')), retry = button('Retry', () => run('retry')); recover.hidden = retry.hidden = true; toolbar.append(title); element.append(toolbar, surface, status, recoveryStatus);
