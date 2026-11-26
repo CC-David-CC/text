@@ -12,7 +12,7 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
   const events = new AbortController();
   let disposed = false, loaded = false, busy = false, loading = false, loadError = '', paused = false, path = resource?.path ?? null, revision = null, dialog = null,
     format = {bom:false, lineEnding:'\n', mixed:false}, lifecycle, timer, checkpointSequence = 0, recoveryState = recovery ? 'ready' : 'unavailable', closeIntent = null, needsCopy = false, recoveryDeferred = false;
-  const editor = createEditor({parent: surface, path: path || 'Untitled.txt', onChange: () => {
+  const editor = createEditor({parent: surface, path: path || 'Untitled.txt', followColorScheme: true, onChange: () => {
     if (disposed) return; closeIntent = null; lifecycle?.changed();
     if (loaded) { render(); clearTimeout(timer); timer = setTimeout(() => { void checkpoint().catch(() => {}); }, 250); }
   }}); editor.setReadOnly(true);
@@ -122,6 +122,12 @@ export function mount({instanceId, sessionId, resource = null, files, authority,
     try {
       destination = asCopy || !path ? await ask({kind:'path',initial:path || 'Untitled.txt'}) : undefined;
       if (destination === null) return false;
+      if (destination && destination !== path) {
+        const name = destination.split('/').at(-1);
+        const currentName = path?.split('/').at(-1) ?? '';
+        const suffix = currentName.lastIndexOf('.');
+        if (name && !name.includes('.')) destination += suffix > 0 ? currentName.slice(suffix) : '.txt';
+      }
       await run('save', destination === undefined ? {} : {destination});
       return editor.isClean();
     } catch (error) {

@@ -55,10 +55,28 @@
 .webos-text-editor {
   flex: 1;
   min-height: 0;
-  background: #fff;
-  color: #182331;
-  color-scheme: light;
+  background: var(--text-surface);
+  color: var(--text-color);
   font: 16px monospace;
+}
+
+.webos-text-editor :is(.cm-gutters, .cm-activeLineGutter) {
+  background: var(--text-raised);
+  color: var(--text-muted);
+  border-color: var(--text-border);
+}
+
+.webos-text-editor .cm-activeLine {
+  background: light-dark(#e9f4fb, #2e3944);
+}
+
+.webos-text-editor .cm-cursor {
+  border-color: var(--text-color);
+}
+
+.webos-text-editor .cm-selectionLayer .cm-selectionBackground,
+.webos-text-editor .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: light-dark(#c1dcf5, #3b5875);
 }
 
 .webos-text-status {
